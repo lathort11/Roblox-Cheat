@@ -1,8 +1,9 @@
 --[[
-    Advanced Optimized Cheat Engine v4.6 + MULTI-MODE NO RECOIL
+    Advanced Optimized Cheat Engine v4.6.4 + MULTI-MODE NO RECOIL
     - Constant & Impulse (Pulse) movement modes
     - Classic & Smart Recoil calculation
     - Added Impulse Interval Settings (0/none support)
+    - ADDED: Aimbot Smoothness Control & Button Fixes
 ]]
 
 -- СЕРВИСЫ
@@ -49,7 +50,7 @@ local Settings = {
     
     -- Настройки Aimbot
     AimbotFOV = 100,
-    AimbotSmooth = 0.2,
+    AimbotSmooth = 0.2, -- Плавность Аимбота
     WallCheck = true,
     ShowFOV = true,
     
@@ -61,7 +62,7 @@ local Settings = {
 
 local Keybinds = {
     ESP = Enum.KeyCode.Y,
-    Aimbot = Enum.KeyCode.R,
+    Aimbot = Enum.KeyCode.N,
     NoRecoil = Enum.KeyCode.G,
     WallCheck = Enum.KeyCode.B,
     Unload = Enum.KeyCode.Delete
@@ -87,8 +88,8 @@ table.insert(CheatEnv.UI, ScreenGui)
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 320, 0, 520) -- Увеличил высоту для новых настроек
-MainFrame.Position = UDim2.new(0.5, -160, 0.5, -260)
+MainFrame.Size = UDim2.new(0, 320, 0, 580) -- Увеличил высоту для новых настроек
+MainFrame.Position = UDim2.new(0.5, -160, 0.5, -290)
 MainFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
 MainFrame.BorderSizePixel = 0
 MainFrame.Visible = true
@@ -97,7 +98,7 @@ MainFrame.Parent = ScreenGui
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, 0, 0, 30)
 Title.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-Title.Text = "  Aimbot & ESP Menu v4.6 + NR"
+Title.Text = "  Aimbot & ESP Menu v4.6.4 + NR"
 Title.TextColor3 = Color3.new(1,1,1)
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Font = Enum.Font.GothamBold
@@ -183,7 +184,6 @@ local function AddButton(text, callback)
     Btn.TextColor3 = Color3.new(1,1,1)
     Btn.Font = Enum.Font.Gotham
     Btn.Parent = MenuContainer
-    --// Btn.MouseButton1Click:Connect(callback) --//
     Btn.MouseButton1Click:Connect(function()
         callback(Btn)
     end)
@@ -387,24 +387,22 @@ AddButton("Toggle ESP [Y]", function()
     UpdateKeybindDisplay("ESP", Keybinds.ESP, Settings.ESP) 
 end)
 
-local NamesBtn = AddButton("ESP Names: " .. tostring(Settings.ESP_Names), function() end)
-NamesBtn.MouseButton1Click:Connect(function() 
+local NamesBtn = AddButton("ESP Names: " .. tostring(Settings.ESP_Names), function(self) 
     Settings.ESP_Names = not Settings.ESP_Names 
-    NamesBtn.Text = "ESP Names: " .. tostring(Settings.ESP_Names) 
+    self.Text = "ESP Names: " .. tostring(Settings.ESP_Names) 
 end)
 
-AddButton("Toggle Aimbot [R]", function() 
+AddButton("Toggle Aimbot [N]", function() 
     Settings.Aimbot = not Settings.Aimbot 
     UpdateKeybindDisplay("Aimbot", Keybinds.Aimbot, Settings.Aimbot) 
 end)
 
-local NRBtn = AddButton("No Recoil [G]: OFF", function() 
+local NRBtn = AddButton("No Recoil [G]: OFF", function(self) 
     Settings.NoRecoil = not Settings.NoRecoil 
-    NRBtn.Text = "No Recoil [G]: " .. (Settings.NoRecoil and "ON" or "OFF")
+    self.Text = "No Recoil [G]: " .. (Settings.NoRecoil and "ON" or "OFF")
     UpdateKeybindDisplay("No Recoil", Keybinds.NoRecoil, Settings.NoRecoil)
 end)
 
--- РЕЖИМЫ NO RECOIL
 local NRModeBtn = AddButton("NR Mode: " .. Settings.NR_Mode, function(self) 
     Settings.NR_Mode = (Settings.NR_Mode == "Classic" and "Smart" or "Classic")
     self.Text = "NR Mode: " .. Settings.NR_Mode
@@ -423,16 +421,20 @@ end,
 function() Settings.ImpulseInterval = Settings.ImpulseInterval + 50 end,
 function() Settings.ImpulseInterval = math.max(Settings.ImpulseInterval - 50, 0) end)
 
-local WallCheckBtn = AddButton("Wall Check [B]: " .. tostring(Settings.WallCheck), function() end)
-WallCheckBtn.MouseButton1Click:Connect(function() 
+local WallCheckBtn = AddButton("Wall Check [B]: " .. tostring(Settings.WallCheck), function(self) 
     Settings.WallCheck = not Settings.WallCheck 
-    WallCheckBtn.Text = "Wall Check [B]: " .. tostring(Settings.WallCheck)
+    self.Text = "Wall Check [B]: " .. tostring(Settings.WallCheck)
     UpdateKeybindDisplay("Wall Check", Keybinds.WallCheck, Settings.WallCheck)
 end)
 
 AddControl("FOV Radius", function() return tostring(Settings.AimbotFOV) end, 
     function() Settings.AimbotFOV = math.min(Settings.AimbotFOV + 10, 800) end,
     function() Settings.AimbotFOV = math.max(Settings.AimbotFOV - 10, 10) end
+)
+
+AddControl("Smoothness", function() return string.format("%.2f", Settings.AimbotSmooth) end,
+    function() Settings.AimbotSmooth = math.min(Settings.AimbotSmooth + 0.05, 1) end,
+    function() Settings.AimbotSmooth = math.max(Settings.AimbotSmooth - 0.05, 0.01) end
 )
 
 AddControl("NR Power", function() return tostring(Settings.RecoilStrength) end,
@@ -477,4 +479,4 @@ table.insert(CheatEnv.Connections, RunService.RenderStepped:Connect(function(dt)
     ApplyNoRecoil(dt)
 end))
 
-print("v4.6 FINAL Loaded. Impulse Mode Support Active.")
+print("v4.6.4 FINAL Loaded. Smoothness and No-Nil logic active.")
