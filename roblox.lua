@@ -57,7 +57,7 @@ local Settings = {
     BoxColor = Color3.fromRGB(255, 50, 50),
     NameColor = Color3.fromRGB(255, 255, 255),
     FOVColor = Color3.fromRGB(255, 255, 255),
-    MenuKey = Enum.KeyCode.RightControl
+    MenuKey = Enum.KeyCode.RightAlt
 }
 
 local Keybinds = {
