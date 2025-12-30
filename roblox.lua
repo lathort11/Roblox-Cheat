@@ -430,7 +430,7 @@ local function UpdateKeybindList()
             local NameLbl = Instance.new("TextLabel", Line)
             NameLbl.Size = UDim2.new(1, 0, 1, 0)
             NameLbl.BackgroundTransparency = 1
-            NameLbl.Text = string.format("%s -> [%s]", bind.Name:upper(), bind.Key.Name)
+            NameLbl.Text = string.format("%s -- [%s]", bind.Name:upper(), bind.Key.Name)
             NameLbl.TextColor3 = Color3.fromRGB(230, 230, 230)
             NameLbl.Font = Enum.Font.GothamMedium
             NameLbl.TextSize = 13
