@@ -1,8 +1,7 @@
 --[[
-    VAYS ENGINE v5.7 (Logo Update)
-    - Added local file handling for custom logo image.
-    - Replaced text header with image header in sidebar.
-    - Fixed GUI Crashes (from v5.6)
+    VAYS ENGINE v5.9 (All Tooltips Added)
+    - Updated UI Helper functions to return objects.
+    - Added comprehensive tooltips for EVERY feature in Combat, Visuals, Misc, and System.
 ]]
 
 -- СЕРВИСЫ
@@ -13,7 +12,7 @@ local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
 local TweenService = game:GetService("TweenService")
 local Lighting = game:GetService("Lighting")
-local HttpService = game:GetService("HttpService") -- Добавлен HttpService
+local HttpService = game:GetService("HttpService")
 
 local MenuBlur = Instance.new("BlurEffect")
 MenuBlur.Size = 0
@@ -36,31 +35,34 @@ local CheatEnv = {
     Connections = {},
     Drawings = {},
     UI = {},
-    Toggles = {}, -- Хранилище кнопок для синхронизации
+    Toggles = {},
     Dropdowns = {}
 }
 
 -- ПЕРЕМЕННЫЕ
 local LastImpulseTime = 0
 local HasShotOnce = false
+local TooltipLabel = nil
 
 -- ЦВЕТОВАЯ ПАЛИТРА
 local Theme = {
     Background = Color3.fromRGB(20, 20, 20),
     Element = Color3.fromRGB(35, 35, 35),
-    Accent = Color3.fromRGB(0, 180, 255), -- Неоновый синий
+    Accent = Color3.fromRGB(0, 180, 255),
     Text = Color3.fromRGB(240, 240, 240),
     TextDark = Color3.fromRGB(150, 150, 150),
     Glow = Color3.fromRGB(0, 190, 255),
-    Stroke = Color3.fromRGB(0, 180, 255)
+    Stroke = Color3.fromRGB(0, 180, 255),
+    Green = Color3.fromRGB(0, 255, 100),
+    Disabled = Color3.fromRGB(60, 60, 60)
 }
 
 -- НАСТРОЙКИ
 local Settings = {
     ESP = false,
     ESP_Names = false,
-    NR_Mode = "Classic", -- Classic, Smart
-    MovementMode = "Constant", -- Constant, Impulse
+    NR_Mode = "Classic",
+    MovementMode = "Constant",
     ImpulseInterval = 500,
     Aimbot = false,
     NoRecoil = false,
@@ -72,10 +74,15 @@ local Settings = {
     BoxColor = Color3.fromRGB(255, 50, 50),
     NameColor = Color3.fromRGB(255, 255, 255),
     FOVColor = Color3.fromRGB(255, 255, 255),
-    MenuKey = Enum.KeyCode.RightAlt
+    MenuKey = Enum.KeyCode.RightAlt,
+    
+    -- Team Check Settings
+    TC_Hide = false,
+    TC_NoAim = true,
+    TC_Green = false
 }
 
--- БИНДЫ (Имя ключа должно совпадать с ключом в Settings)
+-- БИНДЫ
 local Keybinds = {
     {Name = "ESP", Key = Enum.KeyCode.Y, Setting = "ESP"},
     {Name = "Aimbot", Key = Enum.KeyCode.T, Setting = "Aimbot"},
@@ -86,9 +93,7 @@ local Keybinds = {
 
 --// ФУНКЦИЯ ЗАГРУЗКИ ЛОГОТИПА //--
 local function SetupLogoImage()
-    -- Проверка поддержки файловой системы эксплойтом
     if not makefolder or not writefile or not isfile or not getcustomasset then
-        warn("Executor does not support file system operations. Falling back to text logo.")
         return nil
     end
 
@@ -97,36 +102,22 @@ local function SetupLogoImage()
     local filePath = subFolderPath .. "/Vays.png"
     local url = "https://raw.githubusercontent.com/lathort11/Roblox-Cheat/main/Vays.png"
 
-    -- Создание папок, если их нет
     if not isfolder(folderPath) then makefolder(folderPath) end
     if not isfolder(subFolderPath) then makefolder(subFolderPath) end
 
-    -- Скачивание файла, если его нет
     if not isfile(filePath) then
         local success, content = pcall(function() return game:HttpGet(url) end)
-        if success then
-            writefile(filePath, content)
-            print("VAYS Logo downloaded successfully.")
-        else
-            warn("Failed to download logo image from URL.")
-            return nil
-        end
+        if success then writefile(filePath, content) else return nil end
     end
 
-    -- Возврат локального ассета
     local success, assetId = pcall(function() return getcustomasset(filePath) end)
-    if success then
-        return assetId
-    else
-        warn("Failed to load custom asset.")
-        return nil
-    end
+    return success and assetId or nil
 end
 
 local LogoAssetId = SetupLogoImage()
 
 --// DRAWING LIB CHECK //--
-local Drawing = Drawing or {new = function() return {Visible = false, Remove = function() end} end} -- Fallback
+local Drawing = Drawing or {new = function() return {Visible = false, Remove = function() end} end}
 
 local FOVRing = Drawing.new("Circle")
 FOVRing.Visible = false
@@ -139,59 +130,90 @@ table.insert(CheatEnv.Drawings, FOVRing)
 
 --// GUI ENGINE //--
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "VAYSUI_v5.7"
+ScreenGui.Name = "VAYSUI_v5.9"
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 if gethui then ScreenGui.Parent = gethui()
 elseif syn and syn.protect_gui then syn.protect_gui(ScreenGui) ScreenGui.Parent = CoreGui
 else ScreenGui.Parent = CoreGui end
 table.insert(CheatEnv.UI, ScreenGui)
 
+-- TOOLTIP SYSTEM
+local TooltipFrame = Instance.new("Frame")
+TooltipFrame.Size = UDim2.new(0, 200, 0, 25)
+TooltipFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+TooltipFrame.BorderSizePixel = 0
+TooltipFrame.Visible = false
+TooltipFrame.ZIndex = 100
+TooltipFrame.Parent = ScreenGui
+
+local TT_Stroke = Instance.new("UIStroke", TooltipFrame)
+TT_Stroke.Color = Theme.Accent
+TT_Stroke.Thickness = 1
+
+local TT_Text = Instance.new("TextLabel")
+TT_Text.Size = UDim2.new(1, -10, 1, 0)
+TT_Text.Position = UDim2.new(0, 5, 0, 0)
+TT_Text.BackgroundTransparency = 1
+TT_Text.TextColor3 = Color3.fromRGB(255, 255, 255)
+TT_Text.TextSize = 12
+TT_Text.Font = Enum.Font.Gotham
+TT_Text.Parent = TooltipFrame
+
+local function AddTooltip(element, text)
+    if not element then return end
+    element.MouseEnter:Connect(function()
+        TT_Text.Text = text
+        local txtSize = game:GetService("TextService"):GetTextSize(text, 12, Enum.Font.Gotham, Vector2.new(500, 100))
+        TooltipFrame.Size = UDim2.new(0, txtSize.X + 20, 0, txtSize.Y + 10)
+        TooltipFrame.Visible = true
+    end)
+    element.MouseLeave:Connect(function()
+        TooltipFrame.Visible = false
+    end)
+    element.MouseMoved:Connect(function(x, y)
+        TooltipFrame.Position = UDim2.new(0, x + 15, 0, y + 15)
+    end)
+end
+
 -- 1. WATERMARK
 local Watermark = Instance.new("Frame")
 Watermark.Name = "Watermark"
-Watermark.Size = UDim2.new(0, 190, 0, 32)
+Watermark.Size = UDim2.new(0, 180, 0, 24)
 Watermark.Position = UDim2.new(0.01, 0, 0.01, 0)
 Watermark.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-Watermark.BackgroundTransparency = 0.1
+Watermark.BackgroundTransparency = 0.2
 Watermark.BorderSizePixel = 0
 Watermark.Parent = ScreenGui
 
-local WM_Corner = Instance.new("UICorner")
-WM_Corner.CornerRadius = UDim.new(0, 6)
-WM_Corner.Parent = Watermark
+local WM_Corner = Instance.new("UICorner", Watermark)
+WM_Corner.CornerRadius = UDim.new(0, 4)
 
-local WM_Stroke = Instance.new("UIStroke")
+local WM_Stroke = Instance.new("UIStroke", Watermark)
 WM_Stroke.Color = Theme.Stroke
-WM_Stroke.Thickness = 1.2
+WM_Stroke.Thickness = 1
 WM_Stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-WM_Stroke.Parent = Watermark
 
 local AccentLine = Instance.new("Frame")
-AccentLine.Size = UDim2.new(1, 0, 0, 2)
+AccentLine.Size = UDim2.new(1, 0, 0, 1.5)
 AccentLine.Position = UDim2.new(0, 0, 0, 0)
 AccentLine.BorderSizePixel = 0
 AccentLine.Parent = Watermark
 
-local AL_Gradient = Instance.new("UIGradient")
+local AL_Gradient = Instance.new("UIGradient", AccentLine)
 AL_Gradient.Color = ColorSequence.new({
     ColorSequenceKeypoint.new(0, Theme.Accent),
     ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 255, 255)),
     ColorSequenceKeypoint.new(1, Theme.Accent)
 })
-AL_Gradient.Parent = AccentLine
-
-local AL_Corner = Instance.new("UICorner")
-AL_Corner.CornerRadius = UDim.new(0, 6)
-AL_Corner.Parent = AccentLine
 
 local WM_Text = Instance.new("TextLabel")
-WM_Text.Size = UDim2.new(1, -20, 1, 0)
-WM_Text.Position = UDim2.new(0, 10, 0, 0)
+WM_Text.Size = UDim2.new(1, -10, 1, 0)
+WM_Text.Position = UDim2.new(0, 8, 0, 0)
 WM_Text.BackgroundTransparency = 1
-WM_Text.Text = "VAYS | FPS: 60 | MS: 20"
+WM_Text.Text = "VAYS | FPS: 0 | MS: 0"
 WM_Text.TextColor3 = Color3.fromRGB(255, 255, 255)
 WM_Text.Font = Enum.Font.Code
-WM_Text.TextSize = 13
+WM_Text.TextSize = 11
 WM_Text.TextXAlignment = Enum.TextXAlignment.Left
 WM_Text.Parent = Watermark
 
@@ -199,7 +221,6 @@ local function UpdateWM()
     local lastTime = tick()
     local frameCount = 0
     local fps = 0
-    
     table.insert(CheatEnv.Connections, RunService.RenderStepped:Connect(function()
         frameCount = frameCount + 1
         if tick() - lastTime >= 1 then
@@ -232,28 +253,24 @@ KeybindFrame.BorderSizePixel = 0
 KeybindFrame.ClipsDescendants = true
 KeybindFrame.Parent = ScreenGui
 
-local KB_Corner = Instance.new("UICorner")
+local KB_Corner = Instance.new("UICorner", KeybindFrame)
 KB_Corner.CornerRadius = UDim.new(0, 4)
-KB_Corner.Parent = KeybindFrame
 
-local KB_Stroke = Instance.new("UIStroke")
+local KB_Stroke = Instance.new("UIStroke", KeybindFrame)
 KB_Stroke.Color = Theme.Stroke
 KB_Stroke.Thickness = 1
 KB_Stroke.Transparency = 0.2
-KB_Stroke.Parent = KeybindFrame
 
-local KB_List = Instance.new("UIListLayout")
+local KB_List = Instance.new("UIListLayout", KeybindFrame)
 KB_List.SortOrder = Enum.SortOrder.LayoutOrder
 KB_List.Padding = UDim.new(0, 2)
 KB_List.HorizontalAlignment = Enum.HorizontalAlignment.Center
-KB_List.Parent = KeybindFrame
 
-local KB_Padding = Instance.new("UIPadding")
+local KB_Padding = Instance.new("UIPadding", KeybindFrame)
 KB_Padding.PaddingTop = UDim.new(0, 6)
 KB_Padding.PaddingBottom = UDim.new(0, 6)
 KB_Padding.PaddingLeft = UDim.new(0, 10)
 KB_Padding.PaddingRight = UDim.new(0, 10)
-KB_Padding.Parent = KeybindFrame
 
 -- 3. MAIN MENU
 local MainFrame = Instance.new("Frame")
@@ -283,14 +300,6 @@ SideBar.Parent = MainFrame
 local SB_Corner = Instance.new("UICorner", SideBar)
 SB_Corner.CornerRadius = UDim.new(0, 8)
 
-local SB_Fix = Instance.new("Frame")
-SB_Fix.Size = UDim2.new(0, 10, 1, 0)
-SB_Fix.Position = UDim2.new(0, 110, 0, 0)
-SB_Fix.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-SB_Fix.BackgroundTransparency = 0.5
-SB_Fix.BorderSizePixel = 0
-SB_Fix.Parent = MainFrame
-
 local TabList = Instance.new("UIListLayout", SideBar)
 TabList.Padding = UDim.new(0, 5)
 TabList.HorizontalAlignment = Enum.HorizontalAlignment.Center
@@ -298,23 +307,20 @@ TabList.HorizontalAlignment = Enum.HorizontalAlignment.Center
 local TabPadding = Instance.new("UIPadding", SideBar)
 TabPadding.PaddingTop = UDim.new(0, 10)
 
--- // ЗАМЕНА ТЕКСТА BLOCK НА ИЗОБРАЖЕНИЕ //
 local Logo
 if LogoAssetId then
-    -- Создаем ImageLabel если картинка загрузилась
     Logo = Instance.new("ImageLabel")
     Logo.Name = "LogoImage"
-    Logo.Size = UDim2.new(0.8, 0, 0, 40) -- Немного уменьшил ширину для красоты
+    Logo.Size = UDim2.new(0.8, 0, 0, 40)
     Logo.BackgroundTransparency = 1
     Logo.Image = LogoAssetId
-    Logo.ScaleType = Enum.ScaleType.Fit -- Сохраняем пропорции картинки
+    Logo.ScaleType = Enum.ScaleType.Fit
     Logo.Parent = SideBar
 else
-    -- Фоллбэк на текст если картинка не загрузилась
     Logo = Instance.new("TextLabel")
     Logo.Name = "LogoText"
     Logo.Size = UDim2.new(1, 0, 0, 40)
-    Logo.Text = "VAYS" -- Заменил BLOCK на VAYS
+    Logo.Text = "VAYS"
     Logo.TextColor3 = Theme.Accent
     Logo.Font = Enum.Font.GothamBold
     Logo.TextSize = 18
@@ -390,10 +396,8 @@ CreateTabButton("System")
 local function GetCurrentParent(tabName) return Tabs[tabName] end
 
 --// UI HELPER FUNCTIONS //--
-
 local function UpdateKeybindList()
     if not KeybindFrame or not KeybindFrame.Parent then return end
-
     for _, child in pairs(KeybindFrame:GetChildren()) do
         if child:IsA("Frame") or child:IsA("TextLabel") then child:Destroy() end
     end
@@ -408,44 +412,34 @@ local function UpdateKeybindList()
     Header.TextSize = 14
     Header.Parent = KeybindFrame
     
-    local Separator = Instance.new("Frame")
+    local Separator = Instance.new("Frame", KeybindFrame)
     Separator.Name = "Separator"
     Separator.Size = UDim2.new(1, 0, 0, 1)
     Separator.BackgroundColor3 = Theme.Stroke
     Separator.BackgroundTransparency = 0.5
     Separator.BorderSizePixel = 0
-    Separator.Parent = KeybindFrame
 
     local activeCount = 0
-    
     for _, bind in ipairs(Keybinds) do
         if bind.Setting ~= "Unload" and Settings[bind.Setting] then
             activeCount = activeCount + 1
-            
-            local Line = Instance.new("Frame")
+            local Line = Instance.new("Frame", KeybindFrame)
             Line.Size = UDim2.new(1, 0, 0, 22)
             Line.BackgroundTransparency = 1
-            Line.Parent = KeybindFrame
             
-            local NameLbl = Instance.new("TextLabel")
+            local NameLbl = Instance.new("TextLabel", Line)
             NameLbl.Size = UDim2.new(1, 0, 1, 0)
             NameLbl.BackgroundTransparency = 1
-            NameLbl.Text = string.format("%s -- [%s]", bind.Name:upper(), bind.Key.Name)
+            NameLbl.Text = string.format("%s -> [%s]", bind.Name:upper(), bind.Key.Name)
             NameLbl.TextColor3 = Color3.fromRGB(230, 230, 230)
             NameLbl.Font = Enum.Font.GothamMedium
             NameLbl.TextSize = 13
             NameLbl.TextXAlignment = Enum.TextXAlignment.Center
-            NameLbl.Parent = Line
         end
     end
     
     local targetHeight = (activeCount > 0) and (activeCount * 22 + 40) or 0
-    
-    TweenService:Create(KeybindFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
-        Size = UDim2.new(0, 200, 0, targetHeight)
-    }):Play()
-    
-    local targetTransparency = (activeCount == 0) and 1 or 0
+    TweenService:Create(KeybindFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Size = UDim2.new(0, 200, 0, targetHeight)}):Play()
     TweenService:Create(KeybindFrame, TweenInfo.new(0.2), {BackgroundTransparency = (activeCount == 0) and 1 or 0.1}):Play()
     TweenService:Create(KB_Stroke, TweenInfo.new(0.2), {Transparency = (activeCount == 0) and 1 or 0.2}):Play()
 end
@@ -470,16 +464,14 @@ local function CreateSection(text, parent)
     Label.Parent = parent
 end
 
-local function CreateToggle(text, settingKey, bindInfo, parent)
+local function CreateToggle(text, settingKey, bindInfo, parent, customCallback)
     local Frame = Instance.new("Frame")
-    -- ИСПРАВЛЕНИЕ: Parent -> parent
     Frame.Parent = parent 
     Frame.Size = UDim2.new(1, 0, 0, 35)
     Frame.BackgroundColor3 = Theme.Element
     
-    local Corner = Instance.new("UICorner")
+    local Corner = Instance.new("UICorner", Frame)
     Corner.CornerRadius = UDim.new(0, 6)
-    Corner.Parent = Frame
     
     local Label = Instance.new("TextLabel")
     Label.Size = UDim2.new(0.7, 0, 1, 0)
@@ -500,17 +492,20 @@ local function CreateToggle(text, settingKey, bindInfo, parent)
     Button.Text = ""
     Button.Parent = Frame
     
-    local BtnCorner = Instance.new("UICorner")
+    local BtnCorner = Instance.new("UICorner", Button)
     BtnCorner.CornerRadius = UDim.new(0, 4)
-    BtnCorner.Parent = Button
     
     CheatEnv.Toggles[settingKey] = Button
     
     Button.MouseButton1Click:Connect(function()
+        if Button.Active == false then return end
         Settings[settingKey] = not Settings[settingKey]
         SyncButton(settingKey)
         UpdateKeybindList()
+        if customCallback then customCallback(Settings[settingKey]) end
     end)
+
+    return Frame
 end
 
 local function CreateDropdown(text, settingKey, options, parent)
@@ -518,11 +513,10 @@ local function CreateDropdown(text, settingKey, options, parent)
     Frame.Size = UDim2.new(1, 0, 0, 50)
     Frame.BackgroundColor3 = Theme.Element
     Frame.ZIndex = 5
-    Frame.Parent = parent -- Added parent
+    Frame.Parent = parent
     
-    local Corner = Instance.new("UICorner")
+    local Corner = Instance.new("UICorner", Frame)
     Corner.CornerRadius = UDim.new(0, 6)
-    Corner.Parent = Frame
     
     local Label = Instance.new("TextLabel")
     Label.Size = UDim2.new(0.5, 0, 0, 35)
@@ -547,9 +541,8 @@ local function CreateDropdown(text, settingKey, options, parent)
     MainBtn.Parent = Frame
     MainBtn.ZIndex = 6
     
-    local M_Corner = Instance.new("UICorner")
+    local M_Corner = Instance.new("UICorner", MainBtn)
     M_Corner.CornerRadius = UDim.new(0, 4)
-    M_Corner.Parent = MainBtn
     
     local DropList = Instance.new("ScrollingFrame")
     DropList.Size = UDim2.new(0.4, 0, 0, 0)
@@ -561,16 +554,13 @@ local function CreateDropdown(text, settingKey, options, parent)
     DropList.Parent = Frame
     DropList.ZIndex = 10
     
-    local D_ListLayout = Instance.new("UIListLayout")
+    local D_ListLayout = Instance.new("UIListLayout", DropList)
     D_ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    D_ListLayout.Parent = DropList
     
     local isOpen = false
-    
     MainBtn.MouseButton1Click:Connect(function()
         isOpen = not isOpen
         DropList.Visible = isOpen
-        
         if isOpen then
             local count = #options
             local h = math.min(count * 25, 100)
@@ -592,7 +582,6 @@ local function CreateDropdown(text, settingKey, options, parent)
         OptBtn.TextSize = 12
         OptBtn.Parent = DropList
         OptBtn.ZIndex = 11
-        
         OptBtn.MouseButton1Click:Connect(function()
             Settings[settingKey] = opt
             MainBtn.Text = opt .. " ▼"
@@ -601,18 +590,18 @@ local function CreateDropdown(text, settingKey, options, parent)
             TweenService:Create(Frame, TweenInfo.new(0.2), {Size = UDim2.new(1, 0, 0, 35)}):Play()
         end)
     end
+    
+    return Frame
 end
 
 local function CreateSlider(text, settingKey, min, max, isFloat, parent)
-    -- ИСПРАВЛЕНИЕ: Frame создается ПЕРЕД тем как мы его используем
     local Frame = Instance.new("Frame")
     Frame.Parent = parent
     Frame.Size = UDim2.new(1, 0, 0, 50)
     Frame.BackgroundColor3 = Theme.Element
     
-    local Corner = Instance.new("UICorner")
+    local Corner = Instance.new("UICorner", Frame)
     Corner.CornerRadius = UDim.new(0, 6)
-    Corner.Parent = Frame
     
     local Label = Instance.new("TextLabel")
     Label.Size = UDim2.new(1, -20, 0, 20)
@@ -631,9 +620,8 @@ local function CreateSlider(text, settingKey, min, max, isFloat, parent)
     SliderBG.BackgroundColor3 = Color3.fromRGB(20,20,20)
     SliderBG.Parent = Frame
     
-    local S_Corner = Instance.new("UICorner")
+    local S_Corner = Instance.new("UICorner", SliderBG)
     S_Corner.CornerRadius = UDim.new(1, 0)
-    S_Corner.Parent = SliderBG
     
     local SliderFill = Instance.new("Frame")
     local startPercent = (Settings[settingKey] - min) / (max - min)
@@ -642,9 +630,8 @@ local function CreateSlider(text, settingKey, min, max, isFloat, parent)
     SliderFill.BorderSizePixel = 0
     SliderFill.Parent = SliderBG
     
-    local F_Corner = Instance.new("UICorner")
+    local F_Corner = Instance.new("UICorner", SliderFill)
     F_Corner.CornerRadius = UDim.new(1, 0)
-    F_Corner.Parent = SliderFill
     
     local Trigger = Instance.new("TextButton")
     Trigger.Size = UDim2.new(1, 0, 1, 0)
@@ -653,16 +640,13 @@ local function CreateSlider(text, settingKey, min, max, isFloat, parent)
     Trigger.Parent = SliderBG
     
     local dragging = false
-    
     Trigger.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true end
     end)
-    
     table.insert(CheatEnv.Connections, UserInputService.InputChanged:Connect(function(input)
         if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
             local pos = UDim2.new(math.clamp((input.Position.X - SliderBG.AbsolutePosition.X) / SliderBG.AbsoluteSize.X, 0, 1), 0, 1, 0)
             SliderFill.Size = pos
-            
             local val = min + ((max - min) * pos.X.Scale)
             if isFloat then
                 val = math.floor(val * 100) / 100
@@ -674,22 +658,21 @@ local function CreateSlider(text, settingKey, min, max, isFloat, parent)
             Settings[settingKey] = val
         end
     end))
-    
     table.insert(CheatEnv.Connections, UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
     end))
+    
+    return Frame
 end
 
 local function CreateInput(text, settingKey, parent)
-    -- ИСПРАВЛЕНИЕ: Frame создается ПЕРЕД тем как мы его используем
     local Frame = Instance.new("Frame")
     Frame.Parent = parent
     Frame.Size = UDim2.new(1, 0, 0, 35)
     Frame.BackgroundColor3 = Theme.Element
     
-    local Corner = Instance.new("UICorner")
+    local Corner = Instance.new("UICorner", Frame)
     Corner.CornerRadius = UDim.new(0, 6)
-    Corner.Parent = Frame
     
     local Label = Instance.new("TextLabel")
     Label.Size = UDim2.new(0.6, 0, 1, 0)
@@ -712,44 +695,39 @@ local function CreateInput(text, settingKey, parent)
     InputBox.TextSize = 14
     InputBox.Parent = Frame
     
-    local I_Corner = Instance.new("UICorner")
+    local I_Corner = Instance.new("UICorner", InputBox)
     I_Corner.CornerRadius = UDim.new(0, 4)
-    I_Corner.Parent = InputBox
     
     InputBox.FocusLost:Connect(function()
         local num = tonumber(InputBox.Text)
-        if num then
-            Settings[settingKey] = num
-        else
-            InputBox.Text = tostring(Settings[settingKey])
-        end
+        if num then Settings[settingKey] = num else InputBox.Text = tostring(Settings[settingKey]) end
     end)
+    
+    return Frame
 end
 
 local function CreateButton(text, color, callback, parent)
-    -- ИСПРАВЛЕНИЕ: Убрана лишняя строка с Frame и исправлен Parent
     local Button = Instance.new("TextButton")
     Button.Size = UDim2.new(1, 0, 0, 30)
     Button.BackgroundColor3 = color or Theme.Element
     Button.Text = text
     Button.TextColor3 = Theme.Text
     Button.Font = Enum.Font.GothamBold
-    Button.Parent = parent -- Было ScrollContainer
+    Button.Parent = parent 
     
-    local Corner = Instance.new("UICorner")
+    local Corner = Instance.new("UICorner", Button)
     Corner.CornerRadius = UDim.new(0, 6)
-    Corner.Parent = Button
     
     Button.MouseButton1Click:Connect(callback)
+    
+    return Button
 end
 
---// DRAG LOGIC (RESTRICTED) //--
 local function MakeDraggable(frame, restrictToMenu)
     local dragging, dragInput, dragStart, startPos
     table.insert(CheatEnv.Connections, frame.InputBegan:Connect(function(input)
         if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
             if restrictToMenu and not MainFrame.Visible then return end
-            
             dragging = true
             dragStart = input.Position
             startPos = frame.Position
@@ -762,7 +740,6 @@ local function MakeDraggable(frame, restrictToMenu)
     table.insert(CheatEnv.Connections, UserInputService.InputChanged:Connect(function(input)
         if input == dragInput and dragging then
             if restrictToMenu and not MainFrame.Visible then dragging = false return end
-            
             local delta = input.Position - dragStart
             frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
         end
@@ -777,45 +754,85 @@ MakeDraggable(KeybindFrame, true)
 --// COMBAT //--
 local C = GetCurrentParent("Combat")
 CreateSection("-- AIMBOT --", C)
-CreateToggle("Aimbot Active", "Aimbot", Keybinds[2], C) -- Fixed bind argument
-CreateSlider("Aimbot FOV", "AimbotFOV", 10, 800, false, C)
-CreateSlider("Smoothness", "AimbotSmooth", 0.01, 1.0, true, C)
-CreateToggle("Wall Check", "WallCheck", Keybinds[4], C)
+AddTooltip(CreateToggle("Aimbot Active", "Aimbot", Keybinds[2], C), "Automatically locks camera onto closest target")
+AddTooltip(CreateSlider("Aimbot FOV", "AimbotFOV", 10, 800, false, C), "Field of View radius for target acquisition")
+AddTooltip(CreateSlider("Smoothness", "AimbotSmooth", 0.01, 1.0, true, C), "Lower value = Faster snap, Higher = Human-like movement")
+AddTooltip(CreateToggle("Wall Check", "WallCheck", Keybinds[4], C), "Check if target is visible behind walls")
 
 CreateSection("-- RECOIL --", C)
-CreateToggle("No Recoil", "NoRecoil", Keybinds[3], C)
-CreateDropdown("Recoil Mode", "NR_Mode", {"Classic", "Smart"}, C)
-CreateSlider("Recoil Strength", "RecoilStrength", 0, 100, false, C)
+AddTooltip(CreateToggle("No Recoil", "NoRecoil", Keybinds[3], C), "Eliminates visual and physical recoil when shooting")
+AddTooltip(CreateDropdown("Recoil Mode", "NR_Mode", {"Classic", "Smart"}, C), "Classic = Static force, Smart = Dynamic compensation")
+AddTooltip(CreateSlider("Recoil Strength", "RecoilStrength", 0, 100, false, C), "Intensity of recoil reduction (Y-Axis)")
 
 --// VISUALS //--
 local V = GetCurrentParent("Visuals")
 CreateSection("-- ESP --", V)
-CreateToggle("Enable ESP", "ESP", Keybinds[1], V)
-CreateToggle("Show Names", "ESP_Names", nil, V)
+AddTooltip(CreateToggle("Enable ESP", "ESP", Keybinds[1], V), "Draws 2D boxes around players")
+AddTooltip(CreateToggle("Show Names", "ESP_Names", nil, V), "Displays player names above their boxes")
 CreateSection("-- OTHER --", V)
-CreateToggle("Draw FOV Circle", "ShowFOV", nil, V)
+AddTooltip(CreateToggle("Draw FOV Circle", "ShowFOV", nil, V), "Visualizes the Aimbot radius on screen")
 
 --// MISC //--
 local M = GetCurrentParent("Misc")
+
+-- TEAM CHECK SUBSECTION
+CreateSection("-- TEAM CHECK --", M)
+
+-- 1. Скрыть союзников
+local T_HideFrame = CreateToggle("Hide Teammates ESP", "TC_Hide", nil, M, function(state)
+    -- Логика зависимостей
+    local greenBtn = CheatEnv.Toggles["TC_Green"]
+    if greenBtn then
+        if state then
+            -- Если Hide включен -> Выключаем и блокируем Green
+            Settings.TC_Green = false
+            SyncButton("TC_Green")
+            greenBtn.Active = false
+            greenBtn.Parent.BackgroundColor3 = Color3.fromRGB(20, 20, 20) -- Dim color
+            TweenService:Create(greenBtn.Parent.TextLabel, TweenInfo.new(0.2), {TextTransparency = 0.6}):Play()
+        else
+            -- Если Hide выключен -> Разблокируем Green
+            greenBtn.Active = true
+            greenBtn.Parent.BackgroundColor3 = Theme.Element
+            TweenService:Create(greenBtn.Parent.TextLabel, TweenInfo.new(0.2), {TextTransparency = 0}):Play()
+        end
+    end
+end)
+AddTooltip(T_HideFrame, "Completely remove teammates from ESP visuals")
+
+-- 2. Не целиться в союзников
+local T_NoAimFrame = CreateToggle("No Aim at Teammates", "TC_NoAim", nil, M)
+AddTooltip(T_NoAimFrame, "Aimbot will ignore players on your team")
+
+-- 3. Зеленый цвет
+local T_GreenFrame = CreateToggle("Green Teammates ESP", "TC_Green", nil, M)
+AddTooltip(T_GreenFrame, "Show teammates in bright green color")
+
 CreateSection("-- MOVEMENT --", M)
-CreateDropdown("Movement Mode", "MovementMode", {"Constant", "Impulse"}, M)
-CreateInput("Impulse Interval (ms)", "ImpulseInterval", M)
+AddTooltip(CreateDropdown("Movement Mode", "MovementMode", {"Constant", "Impulse"}, M), "Method of recoil mouse simulation")
+AddTooltip(CreateInput("Impulse Interval (ms)", "ImpulseInterval", M), "Delay between recoil compensation impulses")
 
 --// SYSTEM //--
 local S = GetCurrentParent("System")
 CreateSection("-- MENU --", S)
-CreateButton("UNLOAD CHEAT", Color3.fromRGB(180, 40, 40), function()
+AddTooltip(CreateButton("UNLOAD CHEAT", Color3.fromRGB(180, 40, 40), function()
     _G.CheatLoaded = false
     MenuBlur:Destroy()
     for i, conn in pairs(CheatEnv.Connections) do pcall(function() conn:Disconnect() end) end
     for i, drawing in pairs(CheatEnv.Drawings) do pcall(function() drawing:Remove() end) end
     for i, ui in pairs(CheatEnv.UI) do pcall(function() ui:Destroy() end) end
     warn("Unloaded.")
-end, S)
+end, S), "Fully unload the script and clear memory")
 
 SwitchTab("Combat")
 
 --// LOGIC FUNCTIONS //--
+local function IsTeammate(player)
+    if not player or not LocalPlayer then return false end
+    if not player.Team or not LocalPlayer.Team then return false end
+    return player.Team == LocalPlayer.Team
+end
+
 local function ApplyNoRecoil(dt)
     if not Settings.NoRecoil then return end
     if not dt then dt = 1/60 end
@@ -859,6 +876,12 @@ local function GetClosestTarget()
     local MousePos = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     for _, Player in pairs(Players:GetPlayers()) do
         if Player ~= LocalPlayer and Player.Character and Player.Character:FindFirstChild("Head") and Player.Character.Humanoid.Health > 0 then
+            
+            -- TEAM CHECK LOGIC FOR AIMBOT
+            if Settings.TC_NoAim and IsTeammate(Player) then
+                continue -- Skip this player
+            end
+
             local Head = Player.Character.Head
             local ScreenPos, OnScreen = Camera:WorldToViewportPoint(Head.Position)
             if OnScreen then
@@ -914,6 +937,17 @@ end
 local function UpdateESP()
     for _, data in pairs(ESP_Storage) do
         local plr = data.Player
+        
+        -- TEAM CHECK ESP LOGIC
+        local isTeam = IsTeammate(plr)
+        
+        -- Если союзник и включена опция "Скрывать" -> полностью пропускаем
+        if isTeam and Settings.TC_Hide then
+            data.Box.Visible = false
+            data.Tag.Visible = false
+            continue
+        end
+
         if Settings.ESP and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") and plr.Character.Humanoid.Health > 0 then
             local HRP = plr.Character.HumanoidRootPart
             local Pos, OnScreen = Camera:WorldToViewportPoint(HRP.Position)
@@ -921,12 +955,22 @@ local function UpdateESP()
                 local Size = (Camera:WorldToViewportPoint(HRP.Position - Vector3.new(0, 3, 0)).Y - Camera:WorldToViewportPoint(HRP.Position + Vector3.new(0, 2.6, 0)).Y) / 2
                 local bWidth, bHeight = (Size * 1.5), (Size * 2)
                 local bPosX, bPosY = (Pos.X - bWidth / 2), (Pos.Y - bHeight / 2)
+                
                 data.Box.Size = Vector2.new(bWidth, bHeight)
                 data.Box.Position = Vector2.new(bPosX, bPosY)
+                
+                -- Логика цвета
+                if isTeam and Settings.TC_Green then
+                    data.Box.Color = Theme.Green
+                else
+                    data.Box.Color = Settings.BoxColor
+                end
+                
                 data.Box.Visible = true
                 if Settings.ESP_Names then
                     data.Tag.Position = Vector2.new(Pos.X, bPosY - 18)
                     data.Tag.Visible = true
+                    data.Tag.Color = (isTeam and Settings.TC_Green) or Settings.NameColor
                 else data.Tag.Visible = false end
             else data.Box.Visible = false data.Tag.Visible = false end
         else data.Box.Visible = false data.Tag.Visible = false end
@@ -964,7 +1008,7 @@ table.insert(CheatEnv.Connections, RunService.RenderStepped:Connect(function(dt)
     UpdateAimbot()
     ApplyNoRecoil(dt)
 end))
-
+    
 UpdateKeybindList()
 
-print(" Vays v5.7 (Logo Update) Loaded successfully.")
+print(" Vays v5.9 (Tooltips Added) Loaded successfully.")
