@@ -1,17 +1,12 @@
 --[[
 
-VAYS ENGINE v6.3 (Comprehensive Bug Fixes & Optimizations)
+VAYS ENGINE v6.5 (Split Targeting Modes)
 
-CHANGELOG v6.3:
-✓ Fixed SetFrameState() forward declaration issue
-✓ Fixed Aimlock toggle sync logic with keybinds
-✓ Added input validation for all numeric fields
-✓ Proper signal management in CheatEnv.Connections
-✓ Added nil safety checks for all critical functions
-✓ Fixed TC_Green color sync issue
-✓ Added graceful error handling in Unload
-✓ Fixed memory leaks in signal handlers
-✓ Added validation for FOV values
+CHANGELOG v6.5:
+✓ Separated Targeting Logic for Aimbot and Aimlock
+✓ Added "Aimlock Target Mode" (Central / Cursor)
+✓ Renamed Aimlock Activation dropdown to "Trigger Mode" for clarity
+✓ Fixed FOV rings to follow their specific modes independently
 
 ]]
 
@@ -53,7 +48,7 @@ local CheatEnv = {
 	UI = {},
 	Toggles = {},
 	Dropdowns = {},
-	UIConnections = {} -- FIX #5: Отдельное хранилище для UI сигналов
+	UIConnections = {} 
 }
 
 -- ПЕРЕМЕННЫЕ
@@ -62,7 +57,7 @@ local LastImpulseTime = 0
 local HasShotOnce = false
 local TooltipLabel = nil
 local AimlockEngaged = false
-local AimlockEngagedFromGUI = false -- FIX #2: Отслеживание источника включения
+local AimlockEngagedFromGUI = false 
 
 -- ЦВЕТОВАЯ ПАЛИТРА
 
@@ -91,6 +86,7 @@ local Settings = {
 	RecoilStrength = 15,
 	AimbotFOV = 100,
 	AimbotSmooth = 0.2,
+    AimbotMode = "Central", -- Режим для Aimbot
 	WallCheck = true,
 	ShowFOV = true,
 	BoxColor = Color3.fromRGB(255, 50, 50),
@@ -102,7 +98,11 @@ local Settings = {
 	AimlockSmooth = 0.5,
 	AimlockFOV = 90,
 	AimlockPart = "Head",
-	AimlockMode = "N Toggle",
+	AimlockMode = "N Toggle", -- Это режим активации (триггер)
+    AimlockTargetMode = "Central", -- [NEW] Режим наведения для Aimlock (Central/Cursor)
+	Prediction = 0.135, -- [NEW] Стандартное значение для большинства пуль
+    Deadzone = 3,       -- [NEW] Радиус в пикселях, где доводка отключается (анти-тряска)
+    KnockedCheck = true,-- [NEW] Проверка на нокнутых
 
 	TC_Hide = false,
 	TC_NoAim = true,
@@ -164,7 +164,7 @@ table.insert(CheatEnv.Drawings, AimlockRing)
 --// GUI ENGINE //--
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "VAYSUI_v6.3"
+ScreenGui.Name = "VAYSUI_v6.5"
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 if gethui then ScreenGui.Parent = gethui()
 elseif syn and syn.protect_gui then syn.protect_gui(ScreenGui) ScreenGui.Parent = CoreGui
@@ -442,8 +442,6 @@ CreateTabButton("System")
 
 local function GetCurrentParent(tabName) return Tabs[tabName] end
 
---// FIX #1: SetFrameState() DEFINED EARLY //--
-
 local function SetFrameState(frame, enabled)
 	if not frame then return end
 	local alpha = enabled and 0 or 0.6
@@ -467,7 +465,6 @@ end
 local function UpdateKeybindList()
 	if not KeybindFrame or not KeybindFrame.Parent then return end
 
-	-- FIX #9: Оптимизированная очистка элементов
 	for _, child in pairs(KeybindFrame:GetChildren()) do
 		if child:IsA("Frame") or child:IsA("TextLabel") then 
 			child:Destroy()
@@ -596,7 +593,6 @@ local function CreateToggle(text, settingKey, bindInfo, parent, customCallback)
 
 	CheatEnv.Toggles[settingKey] = Button
 
-	-- FIX #2: Улучшенная логика Aimlock toggle
 	local conn = Button.MouseButton1Click:Connect(function()
 		if Button.Active == false then return end
 
@@ -716,7 +712,6 @@ local function CreateDropdown(text, settingKey, options, parent, customCallback)
 			DropList.Visible = false
 			TweenService:Create(Frame, TweenInfo.new(0.2), {Size = UDim2.new(1, 0, 0, 35)}):Play()
 			
-			-- FIX #7: Синхронизация при смене AimlockMode
 			if settingKey == "AimlockMode" then
 				if not AimlockEngagedFromGUI and AimlockEngaged then
 					AimlockEngaged = false
@@ -841,12 +836,11 @@ local function CreateInput(text, settingKey, parent)
 	local I_Corner = Instance.new("UICorner", InputBox)
 	I_Corner.CornerRadius = UDim.new(0, 4)
 
-	-- FIX #3: Input validation для numeric полей
 	local conn = InputBox.FocusLost:Connect(function()
 		local num = tonumber(InputBox.Text)
 		if num then
 			if settingKey == "ImpulseInterval" then
-				num = math.max(0, num) -- FIX #3: Prevent negative values
+				num = math.max(0, num) 
 			end
 			Settings[settingKey] = num
 		end
@@ -910,11 +904,10 @@ MakeDraggable(KeybindFrame, true)
 
 local C = GetCurrentParent("Combat")
 
-CreateSection("-- Wall Check --", C)
-AddTooltip(CreateToggle("Wall Check", "WallCheck", Keybinds[5], C), "Global check: Targets behind walls will be ignored")
-
 CreateSection("-- AIMBOT --", C)
 AddTooltip(CreateToggle("Aimbot Active", "Aimbot", Keybinds[3], C), "Automatically locks camera onto closest target")
+-- [NEW] Aimbot Mode Dropdown
+AddTooltip(CreateDropdown("Aimbot Mode", "AimbotMode", {"Central", "Cursor"}, C), "Central: Crosshair based / Cursor: Mouse based")
 AddTooltip(CreateSlider("Aimbot FOV", "AimbotFOV", 10, 800, false, C), "Field of View radius for target acquisition")
 AddTooltip(CreateSlider("Smoothness", "AimbotSmooth", 0.01, 1.0, true, C), "Lower value = Faster snap, Higher = Human-like movement")
 
@@ -923,7 +916,20 @@ AddTooltip(CreateToggle("Enable Aimlock", "Aimlock", Keybinds[2], C), "Toggle th
 CreateSlider("Aimlock FOV", "AimlockFOV", 10, 800, false, C)
 CreateSlider("Aimlock Smooth", "AimlockSmooth", 0.01, 1.0, true, C)
 CreateDropdown("Hit Point", "AimlockPart", {"Head", "Neck", "Chest"}, C)
-CreateDropdown("Activation Mode", "AimlockMode", {"N Toggle", "N Hold"}, C)
+
+-- [NEW] Added specific targeting mode for Aimlock
+AddTooltip(CreateDropdown("Targeting Mode", "AimlockTargetMode", {"Central", "Cursor"}, C), "How Aimlock selects targets (Center or Mouse)")
+-- Renamed previous "Mode" to "Trigger Mode" to avoid confusion
+AddTooltip(CreateDropdown("Trigger Mode", "AimlockMode", {"N Toggle", "N Hold"}, C), "How to activate Aimlock")
+
+-- Вставь это ПОСЛЕ создания слайдеров Aimbot/Aimlock
+CreateSection("-- PREDICTION & CHECKS --", C)
+AddTooltip(CreateSlider("Prediction", "Prediction", 0, 1, true, C), "Predict target movement (0.12 - 0.16 is standard)")
+AddTooltip(CreateSlider("Deadzone", "Deadzone", 0, 10, false, C), "Pixels range to stop aiming (Fixes shaking)")
+AddTooltip(CreateToggle("Ignore Knocked", "KnockedCheck", nil, C), "Don't aim at downed players")
+
+CreateSection("-- Wall Check --", C)
+AddTooltip(CreateToggle("Wall Check", "WallCheck", Keybinds[5], C), "Global check: Targets behind walls will be ignored")
 
 CreateSection("-- NO RECOIL --", C)
 AddTooltip(CreateToggle("No Recoil", "NoRecoil", Keybinds[4], C), "Eliminates visual and physical recoil when shooting")
@@ -958,7 +964,6 @@ local S = GetCurrentParent("System")
 CreateSection("-- MENU --", S)
 
 AddTooltip(CreateButton("UNLOAD CHEAT", Color3.fromRGB(180, 40, 40), function()
-	-- FIX #10: Safe unload with error handling
 	_G.CheatLoaded = false
 	
 	pcall(function()
@@ -989,7 +994,7 @@ AddTooltip(CreateButton("UNLOAD CHEAT", Color3.fromRGB(180, 40, 40), function()
 		end
 	end)
 	
-	warn("✓ VAYS v6.3 unloaded successfully.")
+	warn("✓ VAYS v6.5 unloaded successfully.")
 end, S), "Fully unload the script and clear memory")
 
 Tabs["Combat"].Visible = true
@@ -1028,7 +1033,15 @@ local function ApplyNoRecoil(dt)
 	end
 end
 
--- FIX #6: Improved IsVisible with nil checks
+-- [NEW] Helper to get Search Origin based on specific Mode string
+local function GetScreenPosition(mode)
+    if mode == "Cursor" then
+        return UserInputService:GetMouseLocation()
+    else
+        return Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    end
+end
+
 local function IsVisible(targetPart, character)
 	if not Settings.WallCheck then return true end
 	if not targetPart or not character then return false end
@@ -1044,86 +1057,128 @@ local function IsVisible(targetPart, character)
 	return (result and result.Instance:IsDescendantOf(character)) or false
 end
 
--- FIX #6: Improved GetClosestTarget with nil checks
-local function GetClosestTarget(fovLimit, hitPartName)
-	if not LocalPlayer or not LocalPlayer.Character then return nil end
-	
-	-- FIX #8: Validation for FOV values
-	fovLimit = math.max(1, fovLimit or 100)
-	
-	local Closest = nil
-	local MinDist = fovLimit
-	local MousePos = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+-- [NEW] Updated to accept specific Origin Point
+local function GetClosestTarget(fovLimit, hitPartName, originPoint)
+    if not LocalPlayer or not LocalPlayer.Character then return nil end
+    
+    fovLimit = math.max(1, fovLimit or 100)
+    local Closest = nil
+    local MinDist = fovLimit
+    local Origin = originPoint
 
-	local realPartName = "Head"
-	if hitPartName == "Neck" then realPartName = "Head"
-	elseif hitPartName == "Chest" then realPartName = "UpperTorso" end
+    local realPartName = "Head"
+    if hitPartName == "Neck" then realPartName = "Head" -- Обычно хитбоксы шеи привязаны к голове
+    elseif hitPartName == "Chest" then realPartName = "UpperTorso" end
 
-	for _, Player in pairs(Players:GetPlayers()) do
-		if Player ~= LocalPlayer and Player.Character then
-			local humanoid = Player.Character:FindFirstChild("Humanoid")
-			if humanoid and humanoid.Health > 0 then
-				if Settings.TC_NoAim and IsTeammate(Player) then
-					continue
-				end
+    for _, Player in pairs(Players:GetPlayers()) do
+        if Player ~= LocalPlayer and Player.Character then
+            local humanoid = Player.Character:FindFirstChild("Humanoid")
+            local char = Player.Character
+            
+            -- [IMPROVED] Проверки жизнедеятельности
+            if humanoid and humanoid.Health > 0 then
+                
+                -- Проверка на нокнутых (KO Check)
+                if Settings.KnockedCheck then
+                    -- Проверка для Da Hood и подобных игр (KO_VAL / Grabbed)
+                    if char:FindFirstChild("KO_VAL") or char:FindFirstChild("Grabbed") then continue end
+                    -- Проверка состояния гуманоида (Ragdoll/FallingDown часто означает нок)
+                    local state = humanoid:GetState()
+                    if state == Enum.HumanoidStateType.Physics or state == Enum.HumanoidStateType.Dead then continue end
+                end
 
-				local TargetPart = Player.Character:FindFirstChild(realPartName)
-				if not TargetPart and hitPartName == "Chest" then 
-					TargetPart = Player.Character:FindFirstChild("Torso") 
-				end
+                if Settings.TC_NoAim and IsTeammate(Player) then continue end
 
-				if TargetPart then
-					local ScreenPos, OnScreen = Camera:WorldToViewportPoint(TargetPart.Position)
-					if OnScreen then
-						local Dist = (Vector2.new(ScreenPos.X, ScreenPos.Y) - MousePos).Magnitude
-						if Dist < MinDist and IsVisible(TargetPart, Player.Character) then
-							MinDist = Dist
-							Closest = TargetPart
-						end
-					end
-				end
-			end
-		end
-	end
+                local TargetPart = char:FindFirstChild(realPartName)
+                if not TargetPart and hitPartName == "Chest" then 
+                    TargetPart = char:FindFirstChild("Torso") 
+                end
 
-	return Closest
+                if TargetPart then
+                    local ScreenPos, OnScreen = Camera:WorldToViewportPoint(TargetPart.Position)
+                    if OnScreen then
+                        local Dist = (Vector2.new(ScreenPos.X, ScreenPos.Y) - Origin).Magnitude
+                        if Dist < MinDist and IsVisible(TargetPart, Player.Character) then
+                            MinDist = Dist
+                            Closest = TargetPart
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return Closest
+end
+
+local function GetPredictedPos(targetPart)
+    if not targetPart then return Vector3.new(0,0,0) end
+    local velocity = Vector3.new(0,0,0)
+    
+    -- Пытаемся найти Velocity у RootPart (самое точное)
+    if targetPart.Parent and targetPart.Parent:FindFirstChild("HumanoidRootPart") then
+        velocity = targetPart.Parent.HumanoidRootPart.Velocity
+    elseif targetPart:IsA("BasePart") then
+        velocity = targetPart.Velocity
+    end
+
+    -- Формула: Позиция + (Скорость * Коэффициент времени)
+    return targetPart.Position + (velocity * Settings.Prediction)
 end
 
 local function UpdateAimbot()
-	if not Camera then return end
-	FOVRing.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-	
-	-- FIX #8: Validate FOV value
-	FOVRing.Radius = math.max(1, Settings.AimbotFOV or 100)
-	FOVRing.Visible = Settings.ShowFOV and Settings.Aimbot
+    if not Camera then return end
+    
+    local Origin = GetScreenPosition(Settings.AimbotMode)
+    FOVRing.Position = Origin
+    FOVRing.Radius = math.max(1, Settings.AimbotFOV or 100)
+    FOVRing.Visible = Settings.ShowFOV and Settings.Aimbot
 
-	if Settings.Aimbot then
-		local TargetPart = GetClosestTarget(Settings.AimbotFOV, "Head")
-		if TargetPart then
-			Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, TargetPart.Position), Settings.AimbotSmooth)
-		end
-	end
+    if Settings.Aimbot then
+        local TargetPart = GetClosestTarget(Settings.AimbotFOV, "Head", Origin)
+        if TargetPart then
+            -- [NEW] Используем предсказанную позицию
+            local GoalPosition = GetPredictedPos(TargetPart)
+            
+            -- [NEW] Проверка Deadzone (если прицел уже на цели, не дергаем камеру)
+            local ScreenPos = Camera:WorldToViewportPoint(GoalPosition)
+            local DistToCenter = (Vector2.new(ScreenPos.X, ScreenPos.Y) - Origin).Magnitude
+            
+            if DistToCenter > Settings.Deadzone then
+                Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, GoalPosition), Settings.AimbotSmooth)
+            end
+        end
+    end
 end
 
 local function UpdateAimlock()
-	if not Settings.Aimlock then
-		AimlockRing.Visible = false
-		AimlockEngaged = false
-		return
-	end
+    if not Settings.Aimlock then
+        AimlockRing.Visible = false
+        AimlockEngaged = false
+        return
+    end
 
-	if not Camera then return end
-	local MousePos = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-	AimlockRing.Position = MousePos
-	AimlockRing.Radius = math.max(1, Settings.AimlockFOV or 90)
-	AimlockRing.Visible = AimlockEngaged
+    if not Camera then return end
+    
+    local Origin = GetScreenPosition(Settings.AimlockTargetMode)
+    AimlockRing.Position = Origin
+    AimlockRing.Radius = math.max(1, Settings.AimlockFOV or 90)
+    AimlockRing.Visible = AimlockEngaged
 
-	if AimlockEngaged then
-		local TargetPart = GetClosestTarget(Settings.AimlockFOV, Settings.AimlockPart)
-		if TargetPart then
-			Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, TargetPart.Position), Settings.AimlockSmooth)
-		end
-	end
+    if AimlockEngaged then
+        local TargetPart = GetClosestTarget(Settings.AimlockFOV, Settings.AimlockPart, Origin)
+        if TargetPart then
+            -- [NEW] Используем предсказанную позицию
+            local GoalPosition = GetPredictedPos(TargetPart)
+            
+            -- Динамическая плавность: чем ближе курсор к цели, тем плавнее движение (чтобы не проскакивать)
+            local currentSmooth = Settings.AimlockSmooth
+            -- Если хочешь добавить замедление у цели, раскомментируй строку ниже:
+            -- currentSmooth = currentSmooth * 0.8 
+
+            Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, GoalPosition), currentSmooth)
+        end
+    end
 end
 
 local ESP_Storage = {}
@@ -1187,7 +1242,6 @@ local function UpdateESP()
 					data.Box.Size = Vector2.new(bWidth, bHeight)
 					data.Box.Position = Vector2.new(bPosX, bPosY)
 
-					-- FIX #4: Corrected TC_Green logic
 					if isTeam and Settings.TC_Green then
 						data.Box.Color = Theme.Green
 					else
@@ -1281,4 +1335,4 @@ end))
 
 UpdateKeybindList()
 
-print("✓ VAYS v6.3 (Comprehensive Fixes) Loaded successfully.")
+print("✓ VAYS v6.5 (Split Targeting Modes) Loaded successfully.")
