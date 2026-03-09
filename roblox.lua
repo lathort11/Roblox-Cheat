@@ -45,14 +45,22 @@ MenuBlur.Parent = Lighting
 local Camera = Workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
+local RuntimeRegistry = rawget(_G, "VAYS_RUNTIME")
+if type(RuntimeRegistry) ~= "table" then
+    RuntimeRegistry = {}
+    _G.VAYS_RUNTIME = RuntimeRegistry
+end
+
 -- ЗАЩИТА ОТ ПОВТОРНОГО ЗАПУСКА
 
-if _G.CheatLoaded then
+if RuntimeRegistry.activeSessionId then
     warn("Скрипт уже запущен! Нажмите Unload для перезагрузки.")
     return
 end
 
-_G.CheatLoaded = true
+local RuntimeSessionId = HttpService:GenerateGUID(false)
+RuntimeRegistry.activeSessionId = RuntimeSessionId
+_G.CheatLoaded = RuntimeSessionId
 
 -- ХРАНИЛИЩЕ
 
@@ -77,12 +85,16 @@ local CheatEnv = {
         StickyStartTime = 0,
         LastUpdate = 0,
         LastTargetSwap = 0,
-        VisibilityUntil = setmetatable({}, { __mode = "k" })
+        VisibilityUntil = setmetatable({}, { __mode = "k" }),
+        TargetSince = 0,
+        EligibleSince = 0,
+        LastGateReason = "idle",
+        DebugInfo = nil
     }
 }
 
 -- Keep camera reference updated (respawn / camera swap)
-local function UpdateCamera()
+function UpdateCamera()
     Camera = Workspace.CurrentCamera
 end
 UpdateCamera()
@@ -97,6 +109,7 @@ local AimlockEngagedFromGUI = false
 local VelocityBuffers = {}
 local PredictionStates = {}
 local PredictionFrameCache = setmetatable({}, { __mode = "k" })
+local PredictionMetaCache = setmetatable({}, { __mode = "k" })
 local WallStorage = {}
 local OriginalWallProperties = {}
 local CB_OriginalLighting = nil
@@ -113,7 +126,11 @@ local AimbotState = {
     RMBHeld = false,
     LastUpdate = 0,
     LastTargetSwap = 0,
-    VisibilityUntil = setmetatable({}, { __mode = "k" })
+    VisibilityUntil = setmetatable({}, { __mode = "k" }),
+    TargetContext = nil,
+    TargetSolution = nil,
+    LastRejectReason = "idle",
+    DebugInfo = nil
 }
 local AimlockState = {
     CurrentTarget = nil,
@@ -123,7 +140,113 @@ local AimlockState = {
     Engaged = false,
     RMBHeld = false,
     LastTargetSwap = 0,
-    VisibilityUntil = setmetatable({}, { __mode = "k" })
+    VisibilityUntil = setmetatable({}, { __mode = "k" }),
+    TargetContext = nil,
+    TargetSolution = nil,
+    PendingLockTarget = nil,
+    PendingLockSince = 0,
+    HardLockTarget = nil,
+    HardLockActive = false,
+    LastRejectReason = "idle",
+    DebugInfo = nil
+}
+
+local RuntimeCadence = {
+    ESP = { interval = 1 / 30, nextRun = 0 },
+    MiscFullbright = { interval = 0.1, nextRun = 0 },
+    Viewmodel = { interval = 1 / 20, nextRun = 0 },
+    CBVisuals = { interval = 1 / 15, nextRun = 0 },
+    BombTimer = { interval = 0.1, nextRun = 0 },
+    WallCache = { interval = 0.15, nextRun = 0 }
+}
+
+function IsSessionActive()
+    return RuntimeRegistry.activeSessionId == RuntimeSessionId
+end
+
+function ClearArrayEntries(arr)
+    if type(arr) ~= "table" then return end
+    for i = #arr, 1, -1 do
+        arr[i] = nil
+    end
+end
+
+function ResetCadence(name)
+    local entry = RuntimeCadence[name]
+    if entry then
+        entry.nextRun = 0
+    end
+end
+
+function ShouldRunCadence(name, now, interval)
+    local entry = RuntimeCadence[name]
+    if not entry then
+        entry = {
+            interval = interval or 0,
+            nextRun = 0
+        }
+        RuntimeCadence[name] = entry
+    elseif interval then
+        entry.interval = interval
+    end
+
+    now = now or tick()
+    if now < (entry.nextRun or 0) then
+        return false
+    end
+
+    entry.nextRun = now + (entry.interval or 0)
+    return true
+end
+
+function ResetAimbotRuntimeState()
+    AimbotState.CurrentTarget = nil
+    AimbotState.StickyTarget = nil
+    AimbotState.StickyStartTime = 0
+    AimbotState.Engaged = false
+    AimbotState.RMBHeld = false
+    AimbotState.VisibilityUntil = setmetatable({}, { __mode = "k" })
+    AimbotState.TargetContext = nil
+    AimbotState.TargetSolution = nil
+    AimbotState.LastRejectReason = "idle"
+    AimbotState.DebugInfo = nil
+end
+
+function SetAimlockEngaged(value, fromGUI)
+    AimlockState.Engaged = value == true
+    AimlockEngaged = AimlockState.Engaged
+    AimlockEngagedFromGUI = AimlockState.Engaged and fromGUI == true or false
+end
+
+function ResetAimlockRuntimeState()
+    AimlockState.CurrentTarget = nil
+    AimlockState.StickyTarget = nil
+    AimlockState.StickyStartTime = 0
+    AimlockState.Engaged = false
+    AimlockState.RMBHeld = false
+    AimlockState.LastTargetSwap = 0
+    AimlockState.VisibilityUntil = setmetatable({}, { __mode = "k" })
+    AimlockState.TargetContext = nil
+    AimlockState.TargetSolution = nil
+    AimlockState.PendingLockTarget = nil
+    AimlockState.PendingLockSince = 0
+    AimlockState.HardLockTarget = nil
+    AimlockState.HardLockActive = false
+    AimlockState.LastRejectReason = "idle"
+    AimlockState.DebugInfo = nil
+    AimlockEngaged = false
+    AimlockEngagedFromGUI = false
+end
+
+CheatEnv.Runtime = {
+    IsActive = IsSessionActive,
+    ShouldRunCadence = ShouldRunCadence,
+    ResetCadence = ResetCadence
+}
+
+CheatEnv.FeatureState = {
+    Aimbot = AimbotState,
+    Aimlock = AimlockState
 }
 
 local v3_new = Vector3.new
@@ -159,7 +282,7 @@ local PredConst = {
 }
 PredConst.ClampRayParams = RaycastParams.new()
 PredConst.ClampRayParams.FilterType = Enum.RaycastFilterType.Exclude
-local FrameTargetCache = { target = nil, tick = 0, fov = 0, part = "", ox = 0, oy = 0 }
+local FrameTargetCache = { target = nil, context = nil, tick = 0, fov = 0, part = "", ox = 0, oy = 0, state = nil }
 
 -- ЦВЕТОВАЯ ПАЛИТРА (PREMIUM v2)
 
@@ -232,6 +355,10 @@ local Settings = {
     AimbotUpdateFPS = 30, -- Lower = smoother but slower response
     AutoShot = false,
     AutoShotDelay = 110, -- milliseconds between shots
+    AutoShotHoldTime = 0.08,
+    AutoShotMinConfidence = 0.42,
+    AutoShotSwitchCooldown = 0.1,
+    AutoShotRequireLOS = true,
     AimbotPart = "Head", -- [NEW] Target part for Aimbot
     WallCheck = true,
     ShowFOV = true,
@@ -262,6 +389,9 @@ local Settings = {
     AimlockTargetMode = "Old", -- [UPDATED] Было Central -> Old
     AimlockUpdateFPS = 30, -- Lower = smoother but slower response
     AimlockForceStick = true, -- [NEW] Hard lock target while Aimlock is active
+    AimlockSoftLock = true,
+    AimlockSoftLockTime = 0.14,
+    AimlockReleaseConfidence = 0.34,
 
     -- [NEW] Humanization & Sticky Aim Settings
     Humanize = true,      -- Enable Bezier curves
@@ -278,6 +408,11 @@ local Settings = {
     FlickBot = false,             -- Instant flick to target
     FlickSpeed = 0.8,             -- Flick intensity (0.5-1.0)
     AutoSwitch = true,            -- Auto-switch when target dies
+    MultiPointFallback = true,
+    TargetStabilityWeight = 0.42,
+    TargetEdgePenalty = 0.7,
+    TargetPredictabilityWeight = 0.55,
+    AimDebug = false,
 
     PredictionEnabled = true,     -- [NEW] Toggle Prediction
     PredictionMode = "Standard",  -- [NEW] Standard / Smart
@@ -350,7 +485,7 @@ local Settings = {
     CB_CustomContrast = 0      -- Contrast level (-1 to 1)
 }
 
-local SharedHookState = _G.VAYS_HOOK_STATE
+local SharedHookState = RuntimeRegistry.hookState or rawget(_G, "VAYS_HOOK_STATE")
 if type(SharedHookState) ~= "table" then
     SharedHookState = {
         active = false,
@@ -358,15 +493,52 @@ if type(SharedHookState) ~= "table" then
         getWallStorage = nil,
         fallRemote = nil,
         raycastInstalled = false,
-        fallDamageInstalled = false
+        fallDamageInstalled = false,
+        wallFilterCache = {},
+        wallCacheBuiltAt = 0,
+        wallCacheSize = 0
     }
+    RuntimeRegistry.hookState = SharedHookState
     _G.VAYS_HOOK_STATE = SharedHookState
+else
+    SharedHookState.wallFilterCache = SharedHookState.wallFilterCache or {}
+    SharedHookState.wallCacheBuiltAt = SharedHookState.wallCacheBuiltAt or 0
+    SharedHookState.wallCacheSize = SharedHookState.wallCacheSize or 0
+    RuntimeRegistry.hookState = SharedHookState
 end
 
 SharedHookState.active = true
 SharedHookState.settings = Settings
 SharedHookState.getWallStorage = function()
     return WallStorage
+end
+
+function RefreshSharedWallCache(force)
+    if type(SharedHookState) ~= "table" then return end
+
+    local now = tick()
+    if not force and not ShouldRunCadence("WallCache", now, RuntimeCadence.WallCache.interval) then
+        return
+    end
+
+    local cache = SharedHookState.wallFilterCache
+    if type(cache) ~= "table" then
+        cache = {}
+        SharedHookState.wallFilterCache = cache
+    else
+        ClearArrayEntries(cache)
+    end
+
+    local count = 0
+    for wall, _ in pairs(WallStorage) do
+        if wall and wall.Parent then
+            count = count + 1
+            cache[count] = wall
+        end
+    end
+
+    SharedHookState.wallCacheSize = count
+    SharedHookState.wallCacheBuiltAt = now
 end
 
 local MM2_Colors = {
@@ -419,9 +591,14 @@ local ConfigSystem = {
         AimbotSmooth = { min = 0.01, max = 1.0 },
         AimbotUpdateFPS = { min = 10, max = 240 },
         AutoShotDelay = { min = 10, max = 500 },
+        AutoShotHoldTime = { min = 0, max = 0.4 },
+        AutoShotMinConfidence = { min = 0, max = 1 },
+        AutoShotSwitchCooldown = { min = 0, max = 0.5 },
         AimlockFOV = { min = 10, max = 800 },
         AimlockSmooth = { min = 0.01, max = 1.0 },
         AimlockUpdateFPS = { min = 10, max = 240 },
+        AimlockSoftLockTime = { min = 0.05, max = 0.5 },
+        AimlockReleaseConfidence = { min = 0.05, max = 1 },
         Prediction = { min = 0, max = 1 },
         PredictionIterations = { min = 1, max = 8 },
         PredictionConfidenceFloor = { min = 0, max = 0.8 },
@@ -442,6 +619,9 @@ local ConfigSystem = {
         ESP_BoxFillTransparency = { min = 0, max = 1 },
         DamageMult = { min = 1, max = 10 },
         FlickSpeed = { min = 0.3, max = 1.0 },
+        TargetStabilityWeight = { min = 0, max = 1.5 },
+        TargetEdgePenalty = { min = 0, max = 1.5 },
+        TargetPredictabilityWeight = { min = 0, max = 1.5 },
         ViewmodelX = { min = -20, max = 20 },
         ViewmodelY = { min = -20, max = 20 },
         ViewmodelZ = { min = -20, max = 20 },
@@ -902,20 +1082,26 @@ local Keybinds = {
 
 --// ФУНКЦИЯ ЗАГРУЗКИ ЛОГОТИПА //--
 
-local function SetupLogoImage()
-    if not isfolder or not makefolder or not writefile or not isfile or not getcustomasset then return nil end
-    local folderPath = "VAYS"
-    local subFolderPath = folderPath .. "/logo"
-    local filePath = subFolderPath .. "/Vays.png"
-    local url = "https://raw.githubusercontent.com/lathort11/Roblox-Cheat/main/Vays.png"
-    if not isfolder(folderPath) then makefolder(folderPath) end
-    if not isfolder(subFolderPath) then makefolder(subFolderPath) end
-    if not isfile(filePath) then
-        local success, content = pcall(function() return game:HttpGet(url) end)
-        if success then writefile(filePath, content) else return nil end
+function SetupLogoImage()
+    if not isfile or not getcustomasset then return nil end
+
+    local localCandidates = {
+        "VAYS/logo/Vays.png",
+        "VAYS/logo/logo.png"
+    }
+
+    for _, filePath in ipairs(localCandidates) do
+        if isfile(filePath) then
+            local success, assetId = pcall(function()
+                return getcustomasset(filePath)
+            end)
+            if success then
+                return assetId
+            end
+        end
     end
-    local success, assetId = pcall(function() return getcustomasset(filePath) end)
-    return success and assetId or nil
+
+    return nil
 end
 
 local LogoAssetId = SetupLogoImage()
@@ -967,7 +1153,17 @@ table.insert(CheatEnv.Drawings, TargetIndicator.Circle)
 table.insert(CheatEnv.Drawings, TargetIndicator.LineH)
 table.insert(CheatEnv.Drawings, TargetIndicator.LineV)
 
-local function UpdateTargetIndicator(screenPos, visible)
+local AimDebugText = Drawing.new("Text")
+AimDebugText.Visible = false
+AimDebugText.Color = Color3.fromRGB(235, 245, 255)
+AimDebugText.Size = 13
+AimDebugText.Font = 2
+AimDebugText.Outline = true
+AimDebugText.OutlineColor = Color3.fromRGB(0, 0, 0)
+AimDebugText.Position = Vector2.new(18, 120)
+table.insert(CheatEnv.Drawings, AimDebugText)
+
+function UpdateTargetIndicator(screenPos, visible)
     if not Settings.TargetIndicator or not visible then
         TargetIndicator.Circle.Visible = false
         TargetIndicator.LineH.Visible = false
@@ -988,6 +1184,45 @@ local function UpdateTargetIndicator(screenPos, visible)
     TargetIndicator.LineV.From = Vector2.new(x, y - size)
     TargetIndicator.LineV.To = Vector2.new(x, y + size)
     TargetIndicator.LineV.Visible = true
+end
+
+function UpdateAimDebugOverlay()
+    if not Settings.AimDebug then
+        AimDebugText.Visible = false
+        return
+    end
+
+    local lines = { "VAYS AIM DEBUG" }
+    local function pushLine(prefix, debugInfo)
+        if not debugInfo then
+            lines[#lines + 1] = prefix .. ": idle"
+            return
+        end
+
+        local targetName = debugInfo.targetName or "-"
+        local hitbox = debugInfo.hitbox or "-"
+        local reason = debugInfo.reason or "tracking"
+        local confidence = tonumber(debugInfo.confidence) or 0
+        local lead = tonumber(debugInfo.lead) or 0
+        local score = tonumber(debugInfo.score) or 0
+        lines[#lines + 1] = string.format(
+            "%s: %s | %s | conf %.2f | lead %.1f | score %.2f | %s",
+            prefix,
+            targetName,
+            hitbox,
+            confidence,
+            lead,
+            score,
+            reason
+        )
+    end
+
+    pushLine("Aimbot", AimbotState.DebugInfo)
+    pushLine("Aimlock", AimlockState.DebugInfo)
+    pushLine("AutoShot", CheatEnv.AutoShotState and CheatEnv.AutoShotState.DebugInfo)
+
+    AimDebugText.Text = table.concat(lines, "\n")
+    AimDebugText.Visible = true
 end
 
 --// GUI ENGINE //--
@@ -1028,7 +1263,7 @@ TT_Text.TextSize = 12
 TT_Text.Font = Enum.Font.Gotham
 TT_Text.Parent = TooltipFrame
 
-local function AddTooltip(element, text)
+function AddTooltip(element, text)
     if not element then return end
     local conn1 = element.MouseEnter:Connect(function()
         TT_Text.Text = text
@@ -1064,7 +1299,7 @@ NC_Layout.VerticalAlignment = Enum.VerticalAlignment.Top
 local NotificationQueue = {}
 local CurrentLayoutOrder = 0
 
-local function ShowNotification(title, message, color)
+function ShowNotification(title, message, color)
     color = color or Theme.Accent
     CurrentLayoutOrder = CurrentLayoutOrder + 1
 
@@ -1365,7 +1600,7 @@ local WM_StatsRPad = Instance.new("UIPadding", WM_StatsRow)
 WM_StatsRPad.PaddingRight = UDim.new(0, 12)
 
 -- Pill factory
-local function CreatePill(parent, bgColor, strokeColor, textColor, order)
+function CreatePill(parent, bgColor, strokeColor, textColor, order)
     local Pill = Instance.new("Frame")
     Pill.Size = UDim2.new(0, 0, 0, 22)
     Pill.AutomaticSize = Enum.AutomaticSize.X
@@ -1436,7 +1671,7 @@ local WM_TimePill, WM_TimeText = CreatePill(
 WM_TimeText.Text = "00:00:00"
 
 -- Color resolvers
-local function ResolveFpsColors(fps)
+function ResolveFpsColors(fps)
     if fps >= 120 then
         return Color3.fromRGB(12, 42, 32), Color3.fromRGB(80, 255, 170), Color3.fromRGB(175, 255, 215)
     elseif fps >= 60 then
@@ -1447,7 +1682,7 @@ local function ResolveFpsColors(fps)
     return Color3.fromRGB(48, 18, 18), Color3.fromRGB(255, 105, 105), Color3.fromRGB(255, 180, 180)
 end
 
-local function ResolvePingColors(ping)
+function ResolvePingColors(ping)
     if ping <= 40 then
         return Color3.fromRGB(12, 42, 32), Color3.fromRGB(80, 235, 165), Color3.fromRGB(175, 255, 215)
     elseif ping <= 85 then
@@ -1458,7 +1693,7 @@ local function ResolvePingColors(ping)
     return Color3.fromRGB(48, 18, 18), Color3.fromRGB(255, 105, 105), Color3.fromRGB(255, 180, 180)
 end
 
-local function AnimatePillText(label)
+function AnimatePillText(label)
     label.TextTransparency = 0.5
     TweenService:Create(label, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
         TextTransparency = 0
@@ -1466,7 +1701,7 @@ local function AnimatePillText(label)
 end
 
 -- Stats updater
-local function UpdateWM()
+function UpdateWM()
     local lastTime = tick()
     local frameCount = 0
     local lastFps, lastPing, lastClock = -1, -1, ""
@@ -1529,14 +1764,14 @@ task.spawn(function()
         TweenInfo.new(4, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1), { Rotation = 405 })
     t1:Play() t2:Play() t3:Play()
 
-    while _G.CheatLoaded do
+    while IsSessionActive() do
         local a1 = TweenService:Create(WM_Stroke, TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.45})
         local a2 = TweenService:Create(LC_Stroke, TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.5})
         local a3 = TweenService:Create(SR_Stroke, TweenInfo.new(1.0, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.85})
         local a4 = TweenService:Create(WM_InnerGlow, TweenInfo.new(2.0, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {BackgroundTransparency = 0.97})
         a1:Play() a2:Play() a3:Play() a4:Play()
         a1.Completed:Wait()
-        if not _G.CheatLoaded then break end
+        if not IsSessionActive() then break end
 
         local b1 = TweenService:Create(WM_Stroke, TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.2})
         local b2 = TweenService:Create(LC_Stroke, TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {Transparency = 0.15})
@@ -1553,7 +1788,7 @@ end
 
 --// GAME TAG COMPONENT //--
 
-local function CreateGameTag()
+function CreateGameTag()
     -- Основной контейнер (сильно прозрачный черный фон)
     local GameTag = Instance.new("Frame")
     GameTag.Name = "GameTag"
@@ -1614,7 +1849,7 @@ local function CreateGameTag()
     local rows = {}
 
     -- Создание обычной строки
-    local function CreateRow(labelText)
+    function CreateRow(labelText)
         local Row = Instance.new("Frame")
         Row.Size = UDim2.new(1, 0, 0, 20)
         Row.BackgroundTransparency = 1
@@ -1647,7 +1882,7 @@ local function CreateGameTag()
     end
 
     -- Создание player row с меткой "Player:"
-    local function CreatePlayerRow()
+    function CreatePlayerRow()
         local Row = Instance.new("Frame")
         Row.Name = "player"
         Row.Size = UDim2.new(1, 0, 0, 20)
@@ -1713,7 +1948,7 @@ end
 local GameTag, GameTagRows = CreateGameTag()
 
 -- Функция обновления данных
-local function UpdateGameTag()
+function UpdateGameTag()
     local playerCount = #Players:GetPlayers()
     GameTagRows["player"].PlayerValue.Text = tostring(playerCount)
     GameTagRows["id"].Value.Text = tostring(game.PlaceId)
@@ -1741,7 +1976,7 @@ local function UpdateGameTag()
 end
 
 -- Загрузка иконки users
-local function LoadUsersIcon()
+function LoadUsersIcon()
     if not isfolder or not makefolder or not writefile or not isfile or not getcustomasset then return end
 
     local folderPath = "VAYS/icons"
@@ -1766,7 +2001,7 @@ LoadUsersIcon()
 
 -- Обновляем каждые 5 секунд
 task.spawn(function()
-    while _G.CheatLoaded do
+    while IsSessionActive() do
         UpdateGameTag()
         task.wait(5)
     end
@@ -1778,7 +2013,7 @@ UpdateGameTag()
 
 local SessionStartTime = tick()
 
-local function FormatSessionTime()
+function FormatSessionTime()
     local elapsed = tick() - SessionStartTime
     local hours = math.floor(elapsed / 3600)
     local minutes = math.floor((elapsed % 3600) / 60)
@@ -1822,7 +2057,7 @@ table.insert(CheatEnv.UI, SessionLabel)
 
 -- Обновление времени каждую секунду
 task.spawn(function()
-    while _G.CheatLoaded do
+    while IsSessionActive() do
         SessionLabel.Text = "You're already playing: " .. FormatSessionTime()
         task.wait(1)
     end
@@ -2089,13 +2324,13 @@ task.spawn(function()
     grad2:Play()
     grad3:Play()
 
-    while _G.CheatLoaded and MainFrame.Parent do
+    while IsSessionActive() and MainFrame.Parent do
         local dim = TweenService:Create(MainGlow, TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
             Transparency = 0.86
         })
         dim:Play()
         dim.Completed:Wait()
-        if not _G.CheatLoaded or not MainFrame.Parent then break end
+        if not IsSessionActive() or not MainFrame.Parent then break end
 
         local bright = TweenService:Create(MainGlow,
             TweenInfo.new(1.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
@@ -2116,7 +2351,7 @@ local TabButtons = {}
 local ActiveTabName = nil
 local TabButtonOrder = 0
 
-local function CreateTabContainer(name, autoScroll)
+function CreateTabContainer(name, autoScroll)
     local Container = Instance.new("ScrollingFrame")
     Container.Name = name .. "Tab"
     Container:SetAttribute("TabName", name)
@@ -2153,7 +2388,7 @@ local function CreateTabContainer(name, autoScroll)
     return Container
 end
 
-local function SetActiveTab(name)
+function SetActiveTab(name)
     if not name then return end
     local target = Tabs[name]
     if not target then return end
@@ -2242,14 +2477,14 @@ local function SetActiveTab(name)
     end
 end
 
-local function TrackUIConnection(conn)
+function TrackUIConnection(conn)
     if conn then
         table.insert(CheatEnv.UIConnections, conn)
     end
     return conn
 end
 
-local function EnsureControlScale(instance, name)
+function EnsureControlScale(instance, name)
     if not instance or typeof(instance) ~= "Instance" then return nil end
     local scaleName = name or "AnimScale"
     local scale = instance:FindFirstChild(scaleName)
@@ -2262,7 +2497,7 @@ local function EnsureControlScale(instance, name)
     return scale
 end
 
-local function TweenControlScale(instance, targetScale, duration, easingStyle, easingDirection)
+function TweenControlScale(instance, targetScale, duration, easingStyle, easingDirection)
     local scale = EnsureControlScale(instance)
     if not scale then return end
     TweenService:Create(
@@ -2272,7 +2507,7 @@ local function TweenControlScale(instance, targetScale, duration, easingStyle, e
     ):Play()
 end
 
-local function BindAnimatedButton(button, options)
+function BindAnimatedButton(button, options)
     if not button then return end
     options = options or {}
 
@@ -2289,7 +2524,7 @@ local function BindAnimatedButton(button, options)
     local pressStroke = stroke and ((options.PressStrokeTransparency ~= nil) and options.PressStrokeTransparency or
         math_max(0, (hoverStroke or 0.4) - 0.08)) or nil
 
-    local function resolveEnabled()
+    function resolveEnabled()
         local custom = options.EnabledCheck
         if custom then
             local ok, result = pcall(custom)
@@ -2300,7 +2535,7 @@ local function BindAnimatedButton(button, options)
         return button.Active ~= false
     end
 
-    local function resolveBaseColor()
+    function resolveBaseColor()
         local getter = options.GetBaseColor
         if getter then
             local ok, value = pcall(getter)
@@ -2311,7 +2546,7 @@ local function BindAnimatedButton(button, options)
         return options.BaseColor or button.BackgroundColor3
     end
 
-    local function resolveHoverColor(baseColor)
+    function resolveHoverColor(baseColor)
         if typeof(options.HoverColor) == "Color3" then
             return options.HoverColor
         end
@@ -2319,7 +2554,7 @@ local function BindAnimatedButton(button, options)
         return baseColor:Lerp(Color3.new(1, 1, 1), mix)
     end
 
-    local function resolvePressColor(hoverColor)
+    function resolvePressColor(hoverColor)
         if typeof(options.PressColor) == "Color3" then
             return options.PressColor
         end
@@ -2327,7 +2562,7 @@ local function BindAnimatedButton(button, options)
         return hoverColor:Lerp(Color3.new(0, 0, 0), mix)
     end
 
-    local function applyState()
+    function applyState()
         if not button or not button.Parent then return end
         local enabled = resolveEnabled()
         local baseColor = resolveBaseColor()
@@ -2401,7 +2636,7 @@ local function BindAnimatedButton(button, options)
     end
 end
 
-local function BindAnimatedCard(frame, stroke, options)
+function BindAnimatedCard(frame, stroke, options)
     if not frame then return end
     options = options or {}
 
@@ -2415,7 +2650,7 @@ local function BindAnimatedCard(frame, stroke, options)
         math_max(0, (baseStroke or 0.75) - 0.28)) or nil
     local hoverScale = options.HoverScale or 1.006
 
-    local function applyHover(isHover)
+    function applyHover(isHover)
         if not frame or not frame.Parent then return end
         local color = isHover and hoverColor or baseColor
         TweenService:Create(frame, TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
@@ -2437,7 +2672,7 @@ local function BindAnimatedCard(frame, stroke, options)
     end))
 end
 
-local function CreateTabButton(name)
+function CreateTabButton(name)
     local Button = Instance.new("TextButton")
     TabButtonOrder = TabButtonOrder + 1
     Button.LayoutOrder = 20 + TabButtonOrder
@@ -2547,7 +2782,7 @@ CreateTabButton("Visuals")
 CreateTabButton("Misc")
 CreateTabButton("System")
 
-local function SetupSearchUI()
+function SetupSearchUI()
     local searchState = {
         Entries = {},
         ResultRows = {},
@@ -2568,7 +2803,7 @@ local function SetupSearchUI()
     }
     CheatEnv.SearchState = searchState
 
-    local function NormalizeSearchText(text)
+    function NormalizeSearchText(text)
         if type(text) ~= "string" then return "" end
         local normalized = text:lower()
         normalized = normalized:gsub("[%c%p]+", " ")
@@ -2576,7 +2811,7 @@ local function SetupSearchUI()
         return normalized
     end
 
-    local function ResolveTabName(parent)
+    function ResolveTabName(parent)
         if not parent then return "System" end
         local attr = parent:GetAttribute("TabName")
         if type(attr) == "string" and attr ~= "" then
@@ -2590,7 +2825,7 @@ local function SetupSearchUI()
         return "System"
     end
 
-    local function LevenshteinLimited(a, b, maxDist)
+    function LevenshteinLimited(a, b, maxDist)
         local la, lb = #a, #b
         if math_abs(la - lb) > maxDist then
             return maxDist + 1
@@ -2630,7 +2865,7 @@ local function SetupSearchUI()
         return prev[lb]
     end
 
-    local function BuildSearchText(label, settingKey, tabName, tags)
+    function BuildSearchText(label, settingKey, tabName, tags)
         local parts = { label or "", tabName or "", settingKey or "", tags or "" }
         local aliases = searchState.Synonyms[settingKey]
         if aliases then
@@ -2639,7 +2874,7 @@ local function SetupSearchUI()
         return NormalizeSearchText(table.concat(parts, " "))
     end
 
-    local function RegisterSearchEntry(label, settingKey, frame, parent, tags)
+    function RegisterSearchEntry(label, settingKey, frame, parent, tags)
         if type(label) ~= "string" or label == "" then return end
         if typeof(frame) ~= "Instance" then return end
 
@@ -2739,7 +2974,7 @@ local function SetupSearchUI()
     ResultsPadding.PaddingLeft = UDim.new(0, 4)
     ResultsPadding.PaddingRight = UDim.new(0, 4)
 
-    local function ClearResultRows()
+    function ClearResultRows()
         for i = #searchState.ResultRows, 1, -1 do
             local row = searchState.ResultRows[i]
             if row and row.Parent then
@@ -2753,7 +2988,7 @@ local function SetupSearchUI()
         searchState.SelectedIndex = 0
     end
 
-    local function SetResultRowState(row, isSelected)
+    function SetResultRowState(row, isSelected)
         if not row or not row:IsA("TextButton") then return end
         local bgColor = isSelected and Theme.PanelSoft or Theme.Element
         local textColor = isSelected and Theme.AccentSoft or Theme.Text
@@ -2771,7 +3006,7 @@ local function SetupSearchUI()
         end
     end
 
-    local function SetSelectedResult(index, keepInView)
+    function SetSelectedResult(index, keepInView)
         local total = #searchState.CurrentResults
         if total <= 0 then
             searchState.SelectedIndex = 0
@@ -2803,7 +3038,7 @@ local function SetupSearchUI()
         end
     end
 
-    local function CloseSearchResults()
+    function CloseSearchResults()
         ResultsFrame.Visible = false
         ResultsFrame.Size = UDim2.new(1, 0, 0, 0)
         ResultsFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -2813,7 +3048,7 @@ local function SetupSearchUI()
 
     local OpenSearchEntry
 
-    local function CommitSearchSelection(entry)
+    function CommitSearchSelection(entry)
         if not entry then return end
         OpenSearchEntry(entry)
         SearchBox.Text = entry.label
@@ -2844,7 +3079,7 @@ local function SetupSearchUI()
         end)
     end
 
-    local function ScoreSearchEntry(entry, queryNorm)
+    function ScoreSearchEntry(entry, queryNorm)
         local searchable = entry.searchText
         if searchable == queryNorm then
             return 1200
@@ -2876,7 +3111,7 @@ local function SetupSearchUI()
         return best
     end
 
-    local function RefreshSearchResults(query)
+    function RefreshSearchResults(query)
         local queryNorm = NormalizeSearchText(query)
         ClearResultRows()
 
@@ -3291,7 +3526,7 @@ do
     CCMB_Corner.CornerRadius = UDim.new(0, 6)
 
     -- Make ConfigFrame draggable (only when MainFrame visible)
-    local function MakeConfigDraggable()
+    function MakeConfigDraggable()
         local dragging, dragInput, dragStart, startPos
 
         table.insert(CheatEnv.Connections, ConfigHeader.InputBegan:Connect(function(input)
@@ -3487,7 +3722,7 @@ do
     end
 
     -- Button Hover Effects
-    local function AddButtonHover(btn)
+    function AddButtonHover(btn)
         if not btn then return end
         local stroke = btn:FindFirstChildOfClass("UIStroke")
         local baseColor = btn.BackgroundColor3
@@ -3632,7 +3867,7 @@ do
     table.insert(CheatEnv.UI, CreateConfigModal)
 end
 
-local function GetUIViewportSize()
+function GetUIViewportSize()
     local activeCamera = Camera or Workspace.CurrentCamera
     if activeCamera and activeCamera.ViewportSize.X > 0 and activeCamera.ViewportSize.Y > 0 then
         return activeCamera.ViewportSize
@@ -3640,7 +3875,7 @@ local function GetUIViewportSize()
     return ScreenGui.AbsoluteSize
 end
 
-local function ClampFrameToViewport(frame, viewport, padding)
+function ClampFrameToViewport(frame, viewport, padding)
     if not frame or not viewport then return end
     local absSize = frame.AbsoluteSize
     if absSize.X <= 0 or absSize.Y <= 0 then return end
@@ -3661,7 +3896,7 @@ local function ClampFrameToViewport(frame, viewport, padding)
     )
 end
 
-local function ApplyResponsiveLayout()
+function ApplyResponsiveLayout()
     local viewport = GetUIViewportSize()
     if not viewport or viewport.X <= 0 or viewport.Y <= 0 then return end
 
@@ -3744,14 +3979,14 @@ if game.PlaceId == 5041144419 then
     SCPRP_Button.LayoutOrder = 103
 end
 
-local function GetCurrentParent(tabName) return Tabs[tabName] end
+function GetCurrentParent(tabName) return Tabs[tabName] end
 
 SetFrameState = function(frame, enabled)
     if not frame then return end
     local alpha = enabled and 0 or 0.6
     local bgColor = enabled and Theme.Element or Theme.Disabled
 
-    local function apply(inst)
+    function apply(inst)
         if inst:IsA("TextButton") or inst:IsA("TextBox") then
             inst.Active = enabled
         end
@@ -3766,12 +4001,12 @@ end
 
 --// UI HELPER FUNCTIONS //--
 
-local function IsAimbotActive(module)
+function IsAimbotActive(module)
     if module == "Aimlock" then
         if not Settings.Aimlock then return false end
         local trigger = Settings.AimlockTrigger or "N Key"
         if trigger == "N Key" then
-            return AimlockEngaged
+            return AimlockState.Engaged
         end
         if trigger == "RMB Hold" then
             return AimlockState.RMBHeld
@@ -3779,7 +4014,7 @@ local function IsAimbotActive(module)
         if trigger == "RMB Toggle" then
             return AimlockState.Engaged
         end
-        return AimlockEngaged
+        return AimlockState.Engaged
     end
 
     if not Settings.Aimbot then return false end
@@ -4370,12 +4605,12 @@ end
 
 CheatEnv.BuildBlurParticleVisual = function(holder, kind, size, zIndex)
     local nodes = {}
-    local function addNode(node)
+    function addNode(node)
         nodes[#nodes + 1] = node
         return node
     end
 
-    local function addStarShape(cx, cy, outerRadius, innerRadius, thickness)
+    function addStarShape(cx, cy, outerRadius, innerRadius, thickness)
         local points = {}
         for i = 0, 9 do
             local angle = math.rad(-90 + i * 36)
@@ -4392,7 +4627,7 @@ CheatEnv.BuildBlurParticleVisual = function(holder, kind, size, zIndex)
         end
     end
 
-    local function addDiamond(x, y, radius)
+    function addDiamond(x, y, radius)
         local diamond = Instance.new("Frame")
         diamond.AnchorPoint = Vector2.new(0.5, 0.5)
         diamond.Size = UDim2.new(0, radius * 2, 0, radius * 2)
@@ -4405,7 +4640,7 @@ CheatEnv.BuildBlurParticleVisual = function(holder, kind, size, zIndex)
         addNode(diamond)
     end
 
-    local function addDot(x, y, radius)
+    function addDot(x, y, radius)
         local dot = Instance.new("Frame")
         dot.AnchorPoint = Vector2.new(0.5, 0.5)
         dot.Size = UDim2.new(0, radius * 2, 0, radius * 2)
@@ -4687,7 +4922,7 @@ CheatEnv.UpdateBlurParticles = function(dt)
     end
 end
 
-local function UpdateKeybindList()
+function UpdateKeybindList()
     if not KeybindFrame or not KeybindFrame.Parent then return end
 
     local keybindGlowStroke = CheatEnv.UI_Elements["KeybindGlowStroke"]
@@ -5035,7 +5270,7 @@ CheatEnv.Sliders = {}   -- {settingKey = {Frame, Label, SliderFill, Knob, min, m
 CheatEnv.Dropdowns = {} -- {settingKey = {MainBtn}}
 
 -- [NEW] Function to refresh all sliders visually
-local function RefreshSliders()
+function RefreshSliders()
     for settingKey, sliderData in pairs(CheatEnv.Sliders) do
         local value = Settings[settingKey]
         if value ~= nil and sliderData then
@@ -5067,7 +5302,7 @@ local function RefreshSliders()
 end
 
 -- [NEW] Function to refresh all dropdowns visually
-local function RefreshDropdowns()
+function RefreshDropdowns()
     for settingKey, dropdownData in pairs(CheatEnv.Dropdowns) do
         local value = Settings[settingKey]
         if value ~= nil and dropdownData and dropdownData.MainBtn then
@@ -5171,7 +5406,7 @@ UpdatePredictionDependencies = function()
     end
 end
 
-local function CreateSection(text, parent)
+function CreateSection(text, parent)
     local Holder = Instance.new("Frame")
     Holder.Size = UDim2.new(1, 0, 0, 42)
     Holder.BackgroundTransparency = 1
@@ -5235,7 +5470,7 @@ local function CreateSection(text, parent)
     })
 end
 
-local function CreateToggle(text, settingKey, bindInfo, parent, customCallback)
+function CreateToggle(text, settingKey, bindInfo, parent, customCallback)
     local Frame = Instance.new("Frame")
     Frame.Parent = parent
     Frame.Size = UDim2.new(1, 0, 0, 50)
@@ -5403,24 +5638,21 @@ local function CreateToggle(text, settingKey, bindInfo, parent, customCallback)
 
         if settingKey == "Aimlock" then
             if Settings[settingKey] then
-                AimlockEngagedFromGUI = true
-                if Settings.AimlockMode == "N Toggle" then
-                    AimlockEngaged = not AimlockEngaged
-                elseif Settings.AimlockMode == "N Hold" then
-                    AimlockEngaged = true
+                if (Settings.AimlockTrigger or "N Key") == "N Key" then
+                    if Settings.AimlockMode == "N Toggle" then
+                        SetAimlockEngaged(not AimlockState.Engaged, true)
+                    elseif Settings.AimlockMode == "N Hold" then
+                        SetAimlockEngaged(true, true)
+                    end
                 end
             else
-                AimlockEngaged = false
-                AimlockEngagedFromGUI = false
-                AimlockState.Engaged = false
-                AimlockState.RMBHeld = false
+                ResetAimlockRuntimeState()
                 AimlockRing.Visible = false -- [FIX] Force hiding ring
             end
         end
 
         if settingKey == "Aimbot" and not Settings[settingKey] then
-            AimbotState.Engaged = false
-            AimbotState.RMBHeld = false
+            ResetAimbotRuntimeState()
         end
 
         if settingKey == "TC_Hide" then
@@ -5436,7 +5668,7 @@ local function CreateToggle(text, settingKey, bindInfo, parent, customCallback)
     return Frame
 end
 
-local function CreateDropdown(text, settingKey, options, parent, customCallback)
+function CreateDropdown(text, settingKey, options, parent, customCallback)
     local Frame = Instance.new("Frame")
     Frame.Size = UDim2.new(1, 0, 0, 58)
     Frame.BackgroundColor3 = Theme.PanelSoft
@@ -5595,22 +5827,18 @@ local function CreateDropdown(text, settingKey, options, parent, customCallback)
             CloseDropdown()
 
             if settingKey == "AimlockMode" then
-                if not AimlockEngagedFromGUI and AimlockEngaged then
-                    AimlockEngaged = false
+                if not AimlockEngagedFromGUI and AimlockState.Engaged then
+                    SetAimlockEngaged(false, false)
                 end
             end
 
             if settingKey == "AimlockTrigger" then
-                AimlockEngaged = false
-                AimlockEngagedFromGUI = false
-                AimlockState.Engaged = false
-                AimlockState.RMBHeld = false
+                ResetAimlockRuntimeState()
                 UpdateKeybindList()
             end
 
             if settingKey == "AimbotTrigger" then
-                AimbotState.Engaged = false
-                AimbotState.RMBHeld = false
+                ResetAimbotRuntimeState()
                 UpdateKeybindList()
             end
 
@@ -5630,7 +5858,7 @@ local function CreateDropdown(text, settingKey, options, parent, customCallback)
     return Frame
 end
 
-local function CreateSlider(text, settingKey, min, max, isFloat, parent, elementId)
+function CreateSlider(text, settingKey, min, max, isFloat, parent, elementId)
     local Frame = Instance.new("Frame")
     Frame.Parent = parent
     Frame.Size = UDim2.new(1, 0, 0, 68)
@@ -5746,10 +5974,15 @@ local function CreateSlider(text, settingKey, min, max, isFloat, parent, element
     Trigger.Size = UDim2.new(1, 0, 1, 0)
     Trigger.BackgroundTransparency = 1
     Trigger.Text = ""
+    Trigger.TextTransparency = 1
+    Trigger.AutoButtonColor = false
+    Trigger.Active = true
+    Trigger.ZIndex = 3
     Trigger.Parent = SliderBG
 
     local dragging = false
     local sliderHovered = false
+    local activeDragInputType = nil
 
     local function SetSliderVisualState(isHover, isDragging)
         local knobSize = isDragging and UDim2.new(0, 18, 0, 18) or (isHover and UDim2.new(0, 16, 0, 16) or UDim2.new(0, 14, 0, 14))
@@ -5783,6 +6016,14 @@ local function CreateSlider(text, settingKey, min, max, isFloat, parent, element
         Settings[settingKey] = val
     end
 
+    local function BeginSliderDrag(xPos, inputType)
+        if Trigger.Active == false then return end
+        dragging = true
+        activeDragInputType = inputType
+        UpdateSliderFromX(xPos)
+        SetSliderVisualState(sliderHovered, true)
+    end
+
     local triggerEnterConn = Trigger.MouseEnter:Connect(function()
         sliderHovered = true
         SetSliderVisualState(true, dragging)
@@ -5794,25 +6035,37 @@ local function CreateSlider(text, settingKey, min, max, isFloat, parent, element
     TrackUIConnection(triggerEnterConn)
     TrackUIConnection(triggerLeaveConn)
 
+    local mouseDownConn = Trigger.MouseButton1Down:Connect(function()
+        local mousePos = UserInputService:GetMouseLocation()
+        BeginSliderDrag(mousePos.X, Enum.UserInputType.MouseButton1)
+    end)
+    TrackUIConnection(mouseDownConn)
+
     local triggerBeganConn = Trigger.InputBegan:Connect(function(input)
-        if Trigger.Active == false then return end
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            UpdateSliderFromX(input.Position.X)
-            SetSliderVisualState(sliderHovered, true)
+            BeginSliderDrag(input.Position.X, Enum.UserInputType.MouseButton1)
+        elseif input.UserInputType == Enum.UserInputType.Touch then
+            BeginSliderDrag(input.Position.X, Enum.UserInputType.Touch)
         end
     end)
     TrackUIConnection(triggerBeganConn)
 
     table.insert(CheatEnv.Connections, UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        if not dragging then
+            return
+        end
+
+        if activeDragInputType == Enum.UserInputType.Touch and input.UserInputType == Enum.UserInputType.Touch then
+            UpdateSliderFromX(input.Position.X)
+        elseif activeDragInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement then
             UpdateSliderFromX(input.Position.X)
         end
     end))
 
     table.insert(CheatEnv.Connections, UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = false
+            activeDragInputType = nil
             SetSliderVisualState(sliderHovered, false)
         end
     end))
@@ -5836,7 +6089,7 @@ local function CreateSlider(text, settingKey, min, max, isFloat, parent, element
     return Frame
 end
 
-local function CreateInput(text, settingKey, parent)
+function CreateInput(text, settingKey, parent)
     local Frame = Instance.new("Frame")
     Frame.Parent = parent
     Frame.Size = UDim2.new(1, 0, 0, 50)
@@ -5928,7 +6181,7 @@ local function CreateInput(text, settingKey, parent)
     return Frame
 end
 
-local function CreateButton(text, color, callback, parent)
+function CreateButton(text, color, callback, parent)
     local Button = Instance.new("TextButton")
     Button.Size = UDim2.new(1, 0, 0, 42)
     Button.BackgroundColor3 = color or Theme.Element
@@ -5987,7 +6240,7 @@ ApplyClickGuiMovementState = function()
     end
 end
 
-local function MakeDraggable(frame, restrictToMenu)
+function MakeDraggable(frame, restrictToMenu)
     if not frame then return end
     local dragging, dragInput, dragStart, startPos
 
@@ -6077,6 +6330,14 @@ AddTooltip(CreateSlider("Aimbot Update FPS", "AimbotUpdateFPS", 10, 240, false, 
 AddTooltip(CreateToggle("Auto Shot", "AutoShot", nil, C), "Automatically fires when Aimbot has a valid target")
 AddTooltip(CreateSlider("Auto Shot Delay (ms)", "AutoShotDelay", 10, 500, false, C),
     "Interval between automatic shots")
+AddTooltip(CreateSlider("Auto Hold Time (s)", "AutoShotHoldTime", 0, 0.4, true, C),
+    "Target must stay aligned for this long before firing")
+AddTooltip(CreateSlider("Auto Min Confidence", "AutoShotMinConfidence", 0, 1, true, C),
+    "Blocks Auto Shot when prediction confidence is too low")
+AddTooltip(CreateSlider("Switch Cooldown (s)", "AutoShotSwitchCooldown", 0, 0.5, true, C),
+    "Prevents firing immediately after target swaps")
+AddTooltip(CreateToggle("Require Direct LOS", "AutoShotRequireLOS", nil, C),
+    "Fire only when the target is directly visible, not just grace-cached")
 
 CreateSection("-- TARGETING --", C)
 AddTooltip(CreateDropdown("Target Priority", "TargetPriority", { "Crosshair", "Health", "Distance", "Threat" }, C),
@@ -6085,6 +6346,14 @@ AddTooltip(CreateToggle("Adaptive Smoothing", "AdaptiveSmoothing", nil, C), "Smo
 AddTooltip(CreateToggle("Oval FOV", "OvalFOV", nil, C), "Aspect-ratio corrected FOV (wider horizontal)")
 AddTooltip(CreateToggle("Target Indicator", "TargetIndicator", nil, C), "Visual crosshair on locked target")
 AddTooltip(CreateToggle("Auto Switch", "AutoSwitch", nil, C), "Instantly switch when target dies")
+AddTooltip(CreateToggle("Multi-Point Fallback", "MultiPointFallback", nil, C),
+    "Falls back from head to torso/root when the preferred hitbox is unstable or blocked")
+AddTooltip(CreateSlider("Stability Weight", "TargetStabilityWeight", 0, 1.5, true, C),
+    "Extra score for targets that stay stable across frames")
+AddTooltip(CreateSlider("Edge Penalty", "TargetEdgePenalty", 0, 1.5, true, C),
+    "Penalizes targets sitting near the edge of your FOV")
+AddTooltip(CreateSlider("Predictability Weight", "TargetPredictabilityWeight", 0, 1.5, true, C),
+    "Rewards targets with smoother, more predictable movement")
 
 CreateSection("-- FLICK BOT --", C)
 AddTooltip(CreateToggle("Enable Flick", "FlickBot", nil, C), "Instant snap to target (rage style)")
@@ -6108,6 +6377,12 @@ AddTooltip(CreateDropdown("Smooth Mode", "AimlockSmoothMode", { "Old", "Mousemov
 AddTooltip(CreateDropdown("Aimlock Trigger", "AimlockTrigger", { "N Key", "RMB Hold", "RMB Toggle" }, C),
     "Activate aimlock with N key or right mouse")
 AddTooltip(CreateDropdown("Trigger Mode", "AimlockMode", { "N Toggle", "N Hold" }, C), "How to activate Aimlock")
+AddTooltip(CreateToggle("Soft Lock Ramp", "AimlockSoftLock", nil, C),
+    "Starts with smooth tracking and upgrades to hard lock after a stable delay")
+AddTooltip(CreateSlider("Soft Lock Time (s)", "AimlockSoftLockTime", 0.05, 0.5, true, C),
+    "How long Aimlock must stay stable before hard lock engages")
+AddTooltip(CreateSlider("Release Confidence", "AimlockReleaseConfidence", 0.05, 1, true, C),
+    "Hard lock releases when confidence falls below this level")
 
 CreateSection("-- PREDICTION & CHECKS --", C)
 
@@ -6152,6 +6427,8 @@ CreateSlider("Curve Power", "HumanizePower", 0.1, 5.0, true, C)
 AddTooltip(CreateSlider("Reaction Time (s)", "ReactionTime", 0, 0.5, true, C), "Delay before locking onto a new target")
 AddTooltip(CreateToggle("Sticky Aim", "StickyAim", nil, C), "Prevents rapid target switching")
 CreateSlider("Sticky Duration", "StickyDuration", 0.1, 2.0, true, C)
+AddTooltip(CreateToggle("Aim Debug Overlay", "AimDebug", nil, C),
+    "Shows target, confidence, lead and current gating reason on screen")
 
 CreateSection("-- Wall Check --", C)
 AddTooltip(CreateToggle("Wall Check", "WallCheck", Keybinds[5], C), "Global check: Targets behind walls will be ignored")
@@ -6301,16 +6578,20 @@ AddTooltip(CreateSlider("Direction X", "UI_BP_DirX", -1, 1, true, S),
 AddTooltip(CreateSlider("Direction Y", "UI_BP_DirY", -1, 1, true, S),
     "Vertical direction (-1 = up, 1 = down)")
 
-local function UnloadCheat()
-    if not _G.CheatLoaded then return end
+function UnloadCheat()
+    if not IsSessionActive() then return end
 
+    RuntimeRegistry.activeSessionId = nil
     _G.CheatLoaded = false
 
-    if _G.VAYS_HOOK_STATE then
-        _G.VAYS_HOOK_STATE.active = false
-        _G.VAYS_HOOK_STATE.settings = nil
-        _G.VAYS_HOOK_STATE.getWallStorage = nil
-        _G.VAYS_HOOK_STATE.fallRemote = nil
+    if RuntimeRegistry.hookState then
+        RuntimeRegistry.hookState.active = false
+        RuntimeRegistry.hookState.settings = nil
+        RuntimeRegistry.hookState.getWallStorage = nil
+        RuntimeRegistry.hookState.fallRemote = nil
+        RuntimeRegistry.hookState.wallCacheBuiltAt = 0
+        RuntimeRegistry.hookState.wallCacheSize = 0
+        ClearArrayEntries(RuntimeRegistry.hookState.wallFilterCache)
     end
 
     -- [NEW] Restore walls before unload
@@ -6341,6 +6622,8 @@ local function UnloadCheat()
         Settings.ReloadMultiplier = 1
         Settings.SpreadMultiplier = 1
         Settings.NoSpread = false
+        ResetAimlockRuntimeState()
+        ResetAimbotRuntimeState()
 
         if type(ApplyWeaponMods) == "function" then
             ApplyWeaponMods()
@@ -6413,6 +6696,7 @@ local function UnloadCheat()
     VelocityBuffers = {}
     PredictionStates = {}
     PredictionFrameCache = setmetatable({}, { __mode = "k" })
+    PredictionMetaCache = setmetatable({}, { __mode = "k" })
     AimbotState.VisibilityUntil = setmetatable({}, { __mode = "k" })
     AimlockState.VisibilityUntil = setmetatable({}, { __mode = "k" })
     AimbotState.CurrentTarget = nil
@@ -6589,7 +6873,7 @@ end
 SetActiveTab("Combat")
 --// LOGIC FUNCTIONS //--
 
-local function IsTeammate(player)
+function IsTeammate(player)
     if not player or not LocalPlayer then return false end
 
     if not player.Team or not LocalPlayer.Team then return false end
@@ -6602,7 +6886,7 @@ local _ResolveCharCache = {}
 local _ResolveCharCacheTick = 0
 local TargetScanPlayers = {}
 
-local function RebuildTargetScanPlayers()
+function RebuildTargetScanPlayers()
     for i = #TargetScanPlayers, 1, -1 do
         TargetScanPlayers[i] = nil
     end
@@ -6658,7 +6942,7 @@ end
 
 RebuildTargetScanPlayers()
 
-local function ApplyNoRecoil(dt)
+function ApplyNoRecoil(dt)
     if not Settings.NoRecoil then return end
     if not dt then dt = 1 / 60 end
     local isPressed = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
@@ -6698,7 +6982,7 @@ local function ApplyNoRecoil(dt)
 end
 
 -- Counter Blox Wall Shot Logic
-local function IsWall(part)
+function IsWall(part)
     if not part or not part:IsA("BasePart") then return false end
 
     -- Игнорируем пол и землю
@@ -6736,7 +7020,7 @@ local function IsWall(part)
     return false
 end
 
-local function SaveWallProperties(part)
+function SaveWallProperties(part)
     if not OriginalWallProperties[part] then
         OriginalWallProperties[part] = {
             Parent = part.Parent,
@@ -6748,7 +7032,7 @@ local function SaveWallProperties(part)
     end
 end
 
-local function MakeWallInvisible(part, mode)
+function MakeWallInvisible(part, mode)
     SaveWallProperties(part)
 
     local method = Settings.WallShotMethod or "Hook (Silent)"
@@ -6775,6 +7059,7 @@ local function MakeWallInvisible(part, mode)
     end
 
     WallStorage[part] = true
+    RefreshSharedWallCache(true)
 end
 
 RestoreWalls = function()
@@ -6798,10 +7083,11 @@ RestoreWalls = function()
     end
     WallStorage = {}
     OriginalWallProperties = {}
+    RefreshSharedWallCache(true)
 end
 
 
-local function BuildRaycastFilter(outList)
+function BuildRaycastFilter(outList)
     local list = outList or {}
     local idx = 0
     local localChar = LocalPlayer and LocalPlayer.Character
@@ -6820,7 +7106,7 @@ local function BuildRaycastFilter(outList)
 end
 
 
-local function GetWallsInCrosshair()
+function GetWallsInCrosshair()
     if not Camera then return {} end
 
     local rayParams = PredConst.WallRayParams
@@ -6870,7 +7156,7 @@ local function GetWallsInCrosshair()
 end
 
 local LastWallShotTime = 0
-local function ApplyWallShot()
+function ApplyWallShot()
     if game.PlaceId ~= 301549746 then return end
     if not Settings.WallShot then
         if next(WallStorage) then RestoreWalls() end -- Only restore if needed
@@ -6919,6 +7205,7 @@ local function ApplyWallShot()
                     OriginalWallProperties[wall] = nil
                 end
             end
+            RefreshSharedWallCache(true)
         end
     elseif Settings.WallShotMode == "Whole Map" then
         -- Add ALL walls to storage (Silent mode)
@@ -6938,7 +7225,7 @@ local function ApplyWallShot()
 end
 
 -- [UPDATED] Helper to get Search Origin based on specific Mode string (Renamed keys)
-local function GetScreenPosition(mode)
+function GetScreenPosition(mode)
     if mode == "Mousemoverel" then -- Was Cursor
         return UserInputService:GetMouseLocation()
     end
@@ -6948,7 +7235,7 @@ local function GetScreenPosition(mode)
         return Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     end
 end
-local function IsVisible(targetPart, character)
+function IsVisible(targetPart, character)
     if not Settings.WallCheck then return true end
     if not Camera then return false end
     if not targetPart or not character then return false end
@@ -7008,7 +7295,7 @@ local function IsVisible(targetPart, character)
     return false
 end
 
-local function IsVisibleCached(targetPart, character)
+function IsVisibleCached(targetPart, character)
     -- 1. Быстрая проверка настроек
     if not Settings.WallCheck then return true end
     if not targetPart or not character then return false end
@@ -7038,7 +7325,7 @@ end
 
 local KnockedFlagNames = { "KO", "Knocked", "Downed", "IsDowned", "DBNO", "Stunned" }
 
-local function ValueIndicatesKnocked(valueObj)
+function ValueIndicatesKnocked(valueObj)
     if not valueObj then
         return false
     end
@@ -7059,7 +7346,7 @@ local function ValueIndicatesKnocked(valueObj)
     return false
 end
 
-local function IsCharacterKnocked(targetPlayer, character, humanoid)
+function IsCharacterKnocked(targetPlayer, character, humanoid)
     if not Settings.KnockedCheck then
         return false
     end
@@ -7098,7 +7385,7 @@ local function IsCharacterKnocked(targetPlayer, character, humanoid)
 end
 
 
-local function GetPartVelocity(part)
+function GetPartVelocity(part)
     if not part then
         return v3_new(0, 0, 0)
     end
@@ -7120,12 +7407,12 @@ local function GetPartVelocity(part)
     return v3_new(0, 0, 0)
 end
 
-local function SmoothStep01(value)
+function SmoothStep01(value)
     value = math_clamp(value, 0, 1)
     return value * value * (3 - (2 * value))
 end
 
-local function GetDynamicDeadzone(baseDeadzone, velocityMag, distance3d)
+function GetDynamicDeadzone(baseDeadzone, velocityMag, distance3d)
     local deadzone = math_max(0, baseDeadzone or 0)
     local speedFactor = math_clamp((velocityMag or 0) / 120, 0, 1)
     local distFactor = math_clamp((distance3d or 0) / 250, 0, 1)
@@ -7136,7 +7423,8 @@ local function GetDynamicDeadzone(baseDeadzone, velocityMag, distance3d)
     return math_max(0, deadzone)
 end
 
-local function BuildSmoothFactor(baseSmooth, distance2d, deadzone, distance3d, adaptiveEnabled, smoothMode, flickEnabled, flickSpeed)
+function BuildSmoothFactor(baseSmooth, distance2d, deadzone, distance3d, adaptiveEnabled, smoothMode, flickEnabled, flickSpeed,
+                           movementInfo)
     local smooth = math_clamp(baseSmooth or 0.2, 0.01, 1)
     local normalized = SmoothStep01((distance2d - deadzone) / 180)
 
@@ -7158,10 +7446,225 @@ local function BuildSmoothFactor(baseSmooth, distance2d, deadzone, distance3d, a
         smooth = math_max(smooth, flickSpeed or 0.8)
     end
 
+    if movementInfo then
+        smooth = smooth * (movementInfo.smoothScale or 1)
+    end
+
     return math_clamp(smooth, 0.01, 1), normalized
 end
 
-local function ApplyHumanizedDelta(delta, timeAlive, humanizePower)
+local HitboxFallbackMap = {
+    Head = { "Head", "UpperTorso", "Torso", "HumanoidRootPart" },
+    Neck = { "Head", "UpperTorso", "Torso", "HumanoidRootPart" },
+    Chest = { "UpperTorso", "Torso", "LowerTorso", "HumanoidRootPart", "Head" }
+}
+
+function GetAimHitboxCandidates(character, hitPartName, root)
+    if not character then
+        return {}
+    end
+
+    local names = HitboxFallbackMap[hitPartName] or HitboxFallbackMap.Head
+    local limit = Settings.MultiPointFallback and #names or 1
+    local candidates = {}
+    local seen = {}
+
+    for rank = 1, limit do
+        local partName = names[rank]
+        local part = nil
+
+        if partName == "UpperTorso" then
+            part = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+        elseif partName == "LowerTorso" then
+            part = character:FindFirstChild("LowerTorso") or character:FindFirstChild("Torso")
+        elseif partName == "HumanoidRootPart" then
+            part = character:FindFirstChild("HumanoidRootPart") or root
+        else
+            part = character:FindFirstChild(partName)
+        end
+
+        if part and not seen[part] then
+            seen[part] = true
+            candidates[#candidates + 1] = {
+                part = part,
+                name = (partName == "HumanoidRootPart") and "Root" or partName,
+                rank = rank
+            }
+        end
+    end
+
+    if #candidates == 0 and root then
+        candidates[1] = {
+            part = root,
+            name = root.Name or "Root",
+            rank = limit + 1
+        }
+    end
+
+    return candidates
+end
+
+function GetTargetPredictability(targetPlayer)
+    if not targetPlayer then
+        return 1, "stable"
+    end
+
+    local confidence = 1
+    local maneuver = "stable"
+
+    local velocityState = VelocityBuffers[targetPlayer]
+    if velocityState and velocityState.confidence ~= nil then
+        confidence = confidence * math_clamp(0.55 + velocityState.confidence * 0.45, 0.35, 1)
+    end
+
+    local predictionState = PredictionStates[targetPlayer]
+    if predictionState then
+        confidence = confidence * math_clamp(0.5 + (predictionState.confidence or 1) * 0.5, 0.35, 1)
+        maneuver = predictionState.lastManeuver or maneuver
+    end
+
+    return math_clamp(confidence, 0, 1), maneuver
+end
+
+function GetPredictionSnapshot(targetPlayer, targetPart)
+    local confidence, maneuver = GetTargetPredictability(targetPlayer)
+    local leadDistance = 0
+
+    if targetPlayer then
+        local meta = PredictionMetaCache[targetPlayer]
+        if meta and (not targetPart or meta.part == targetPart) then
+            confidence = math_clamp((confidence * 0.45) + ((meta.confidence or confidence) * 0.55), 0, 1)
+            maneuver = meta.maneuver or maneuver
+            leadDistance = meta.leadDistance or 0
+        end
+    end
+
+    return confidence, maneuver, leadDistance
+end
+
+function GetMovementAimProfile(targetPart, targetPlayer, distance3d, targetVelocity, predictionConfidence, maneuverName)
+    local velocity = targetVelocity or GetPartVelocity(targetPart)
+    local speed = velocity.Magnitude
+    local maneuver = maneuverName or "stable"
+    local smoothScale, deadzoneScale, stepScale = 1, 1, 1
+    local profileName = "stable"
+
+    if (distance3d or 0) < 45 then
+        profileName = "close"
+        smoothScale = smoothScale * 0.78
+        stepScale = stepScale * 1.14
+    end
+
+    local airborne = false
+    local humanoid = targetPart and targetPart.Parent and targetPart.Parent:FindFirstChild("Humanoid")
+    if humanoid then
+        local humanoidState = humanoid:GetState()
+        airborne = humanoidState == Enum.HumanoidStateType.Freefall or humanoidState == Enum.HumanoidStateType.Jumping
+    end
+
+    if airborne or maneuver == "airborne" then
+        profileName = "air"
+        smoothScale = smoothScale * 1.16
+        deadzoneScale = deadzoneScale * 0.82
+        stepScale = stepScale * 0.94
+    elseif maneuver == "dodge" or speed > 95 then
+        profileName = "strafe"
+        smoothScale = smoothScale * 1.18
+        deadzoneScale = deadzoneScale * 0.78
+        stepScale = stepScale * 0.88
+    elseif maneuver == "turn" or speed > 18 then
+        profileName = "moving"
+        smoothScale = smoothScale * 1.05
+        deadzoneScale = deadzoneScale * 0.9
+    elseif speed < 4 then
+        if profileName ~= "close" then
+            profileName = "idle"
+        end
+        smoothScale = smoothScale * 0.84
+        stepScale = stepScale * 1.08
+    end
+
+    if (predictionConfidence or 1) < 0.55 then
+        smoothScale = smoothScale * 1.08
+        stepScale = stepScale * 0.92
+    end
+
+    return {
+        name = profileName,
+        speed = speed,
+        maneuver = maneuver,
+        smoothScale = smoothScale,
+        deadzoneScale = deadzoneScale,
+        stepScale = stepScale
+    }
+end
+
+function GetTargetRejectReason(rejectStats)
+    local labels = {
+        team = "team filtered",
+        knocked = "knocked filtered",
+        dead = "dead targets",
+        noRoot = "missing root",
+        offscreen = "off screen",
+        fov = "outside fov",
+        wall = "visibility blocked"
+    }
+    local bestKey, bestCount = nil, 0
+
+    for key, count in pairs(rejectStats or {}) do
+        if count > bestCount then
+            bestKey = key
+            bestCount = count
+        end
+    end
+
+    return labels[bestKey] or "no viable target"
+end
+
+function BuildAimSolution(targetPart, targetPlayer, originPoint)
+    if not targetPart then
+        return nil
+    end
+
+    if not targetPlayer and targetPart.Parent then
+        targetPlayer = ResolvePlayerFromCharacterModel(targetPart.Parent)
+    end
+
+    local goalPosition = GetPredictedPos(targetPart, targetPlayer)
+    local screenPos, onScreen = Camera:WorldToViewportPoint(goalPosition)
+    local targetVelocity = GetPartVelocity(targetPart)
+    local dist3d = (targetPart.Position - Camera.CFrame.Position).Magnitude
+    local confidence, maneuver, leadDistance = GetPredictionSnapshot(targetPlayer, targetPart)
+    local movementInfo = GetMovementAimProfile(targetPart, targetPlayer, dist3d, targetVelocity, confidence, maneuver)
+    local deadzone = GetDynamicDeadzone(Settings.Deadzone or 3, targetVelocity.Magnitude, dist3d)
+    deadzone = deadzone * (movementInfo.deadzoneScale or 1)
+
+    local screenPoint = nil
+    local distance2d = math_huge
+    if onScreen then
+        screenPoint = v2_new(screenPos.X, screenPos.Y)
+        local baseOrigin = originPoint or GetScreenPosition("Old")
+        distance2d = (screenPoint - baseOrigin).Magnitude
+    end
+
+    return {
+        player = targetPlayer,
+        goalPosition = goalPosition,
+        onScreen = onScreen == true,
+        screenPoint = screenPoint,
+        dist3d = dist3d,
+        velocity = targetVelocity,
+        velocityMag = targetVelocity.Magnitude,
+        confidence = confidence,
+        maneuver = maneuver,
+        leadDistance = leadDistance,
+        movement = movementInfo,
+        deadzone = deadzone,
+        distance2d = distance2d
+    }
+end
+
+function ApplyHumanizedDelta(delta, timeAlive, humanizePower)
     local distance = delta.Magnitude
     if distance <= 0.001 then
         return delta
@@ -7176,7 +7679,7 @@ local function ApplyHumanizedDelta(delta, timeAlive, humanizePower)
     return delta + v2_new(swayX, swayY)
 end
 
-local function GetClosestTarget(fovLimit, hitPartName, originPoint, state)
+function GetClosestTarget(fovLimit, hitPartName, originPoint, state)
     if not Camera then
         return nil
     end
@@ -7195,10 +7698,13 @@ local function GetClosestTarget(fovLimit, hitPartName, originPoint, state)
         FrameTargetCache.fov == fovLimit and
         FrameTargetCache.part == hitPartName and
         FrameTargetCache.ox == originX and
-        FrameTargetCache.oy == originY then
+        FrameTargetCache.oy == originY and
+        FrameTargetCache.state == state then
         local cached = FrameTargetCache.target
         if cached and cached.Parent then
             state.CurrentTarget = cached
+            state.TargetContext = FrameTargetCache.context
+            state.LastRejectReason = "cached"
             return cached
         end
     end
@@ -7229,7 +7735,25 @@ local function GetClosestTarget(fovLimit, hitPartName, originPoint, state)
                     local dy = sp.Y - originPoint.Y
                     local dist = math_sqrt(dx * dx + dy * dy)
                     if onScreen and dist <= fovLimit * 1.35 then
+                        local stickyPlayer = ResolvePlayerFromCharacterModel(target.Parent)
+                        local stickyConfidence, stickyManeuver, stickyLead = GetPredictionSnapshot(stickyPlayer, target)
                         state.CurrentTarget = target
+                        state.TargetContext = {
+                            player = stickyPlayer,
+                            character = target.Parent,
+                            part = target,
+                            hitbox = target.Name,
+                            score = 999,
+                            confidence = stickyConfidence,
+                            maneuver = stickyManeuver,
+                            leadDistance = stickyLead,
+                            reason = "sticky retain",
+                            targetName = stickyPlayer and stickyPlayer.Name or "sticky",
+                            visible = stickyVisible,
+                            distance2d = dist,
+                            distance3d = (target.Position - Camera.CFrame.Position).Magnitude
+                        }
+                        state.LastRejectReason = "sticky retain"
                         return target
                     end
                 end
@@ -7245,15 +7769,26 @@ local function GetClosestTarget(fovLimit, hitPartName, originPoint, state)
             state.CurrentTarget = nil
             state.StickyTarget = nil
             state.StickyStartTime = 0
+            state.TargetContext = nil
         end
     end
 
     local bestTarget, bestScore = nil, -math_huge
+    local bestContext = nil
     local currentTargetScore = -math_huge
-    local partName =
-        hitPartName == "Neck" and "Head"
-        or hitPartName == "Chest" and "UpperTorso"
-        or "Head"
+    local currentTargetPart = nil
+    local currentTargetContext = nil
+    local currentTargetCharacter = state.CurrentTarget and state.CurrentTarget.Parent or nil
+    local stickyCharacter = state.StickyTarget and state.StickyTarget.Parent or nil
+    local rejectStats = {
+        dead = 0,
+        team = 0,
+        knocked = 0,
+        noRoot = 0,
+        offscreen = 0,
+        fov = 0,
+        wall = 0
+    }
 
     local fovX, fovY = fovLimit, fovLimit
     if Settings.OvalFOV then
@@ -7265,10 +7800,10 @@ local function GetClosestTarget(fovLimit, hitPartName, originPoint, state)
         local lockedTarget = state.CurrentTarget
         local lockedChar = lockedTarget.Parent
         local lockedHum = lockedChar:FindFirstChild("Humanoid")
+        local lockedPlayer = ResolvePlayerFromCharacterModel(lockedChar)
         local lockedAlive = (not lockedHum) or (lockedHum.Health > 0)
         local lockedKnocked = false
         if knockedCheckEnabled then
-            local lockedPlayer = ResolvePlayerFromCharacterModel(lockedChar)
             lockedKnocked = IsCharacterKnocked(lockedPlayer, lockedChar, lockedHum)
         end
 
@@ -7286,6 +7821,23 @@ local function GetClosestTarget(fovLimit, hitPartName, originPoint, state)
                 local lockedGrace = state.VisibilityUntil[lockedTarget]
 
                 if normalizedDist <= 1 and (lockedVisible or (lockedGrace and lockedGrace > currentTick)) then
+                    local lockedConfidence, lockedManeuver, lockedLead = GetPredictionSnapshot(lockedPlayer, lockedTarget)
+                    state.TargetContext = {
+                        player = lockedPlayer,
+                        character = lockedChar,
+                        part = lockedTarget,
+                        hitbox = lockedTarget.Name,
+                        score = 998,
+                        confidence = lockedConfidence,
+                        maneuver = lockedManeuver,
+                        leadDistance = lockedLead,
+                        reason = "auto-switch disabled",
+                        targetName = lockedPlayer and lockedPlayer.Name or lockedTarget.Name,
+                        visible = lockedVisible,
+                        distance2d = normalizedDist * fovLimit,
+                        distance3d = (lockedTarget.Position - Camera.CFrame.Position).Magnitude
+                    }
+                    state.LastRejectReason = "auto-switch disabled"
                     return lockedTarget
                 end
             end
@@ -7294,6 +7846,9 @@ local function GetClosestTarget(fovLimit, hitPartName, originPoint, state)
 
     local W_Dist, W_Health, W_Angle, W_Threat = -1.5, -0.3, -1.2, 0
     local priority = Settings.TargetPriority
+    local stabilityWeight = math_clamp(Settings.TargetStabilityWeight or 0.42, 0, 1.5)
+    local edgePenaltyWeight = math_clamp(Settings.TargetEdgePenalty or 0.7, 0, 1.5)
+    local predictabilityWeight = math_clamp(Settings.TargetPredictabilityWeight or 0.55, 0, 1.5)
     if priority == "Health" then
         W_Health = -3.0
         W_Dist = -0.5
@@ -7318,108 +7873,183 @@ local function GetClosestTarget(fovLimit, hitPartName, originPoint, state)
         local char = ResolveCharacterModel(plr)
         if char then
             local hum = char:FindFirstChild("Humanoid")
-            if hum and hum.Health <= 0 then continue end
-            if Settings.TC_NoAim and IsTeammate(plr) then continue end
-            if knockedCheckEnabled and IsCharacterKnocked(plr, char, hum) then continue end
+            if hum and hum.Health <= 0 then
+                rejectStats.dead = rejectStats.dead + 1
+                continue
+            end
+            if Settings.TC_NoAim and IsTeammate(plr) then
+                rejectStats.team = rejectStats.team + 1
+                continue
+            end
+            if knockedCheckEnabled and IsCharacterKnocked(plr, char, hum) then
+                rejectStats.knocked = rejectStats.knocked + 1
+                continue
+            end
 
             local root = ResolveCharacterRoot(char)
-            if not root then continue end
-
-            local part = char:FindFirstChild(partName)
-            if not part and partName == "UpperTorso" then
-                part = char:FindFirstChild("Torso")
+            if not root then
+                rejectStats.noRoot = rejectStats.noRoot + 1
+                continue
             end
-            if not part then
-                part = root
+
+            local predictability, maneuver = GetTargetPredictability(plr)
+            local sameCharacterAsCurrent = currentTargetCharacter and currentTargetCharacter == char or false
+            local sameCharacterAsSticky = stickyCharacter and stickyCharacter == char or false
+            local candidates = GetAimHitboxCandidates(char, hitPartName, root)
+            if #candidates == 0 then
+                rejectStats.noRoot = rejectStats.noRoot + 1
+                continue
             end
-            if not part then continue end
 
-            local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
-            if not onScreen then continue end
-
-            local deltaX = sp.X - originPoint.X
-            local deltaY = sp.Y - originPoint.Y
-            local normalizedDist = math_sqrt((deltaX / fovX) ^ 2 + (deltaY / fovY) ^ 2)
-            if normalizedDist > 1 then continue end
-
-            local dist2d = math_sqrt(deltaX * deltaX + deltaY * deltaY)
-            local partPos = part.Position
-            local dist3d = (partPos - camPos).Magnitude
-
-            local directionToTarget = (partPos - camPos).Unit
-            local lookDot = math_clamp(lookVector:Dot(directionToTarget), -1, 1)
-
-            local canSee = IsVisibleCached(part, char)
-            if canSee then
-                state.VisibilityUntil[part] = currentTick + TARGET_OCCLUSION_GRACE
-            else
-                local graceUntil = state.VisibilityUntil[part]
-                if not graceUntil or graceUntil <= currentTick then
+            for candidateIndex = 1, #candidates do
+                local candidate = candidates[candidateIndex]
+                local part = candidate.part
+                if not part or not part.Parent then
                     continue
                 end
-            end
 
-            local maxHealth = (hum and hum.MaxHealth) or 100
-            if maxHealth <= 0 then maxHealth = 100 end
-            local currentHealth = (hum and hum.Health) or 100
-            if hum and currentHealth <= 0 then continue end
-
-            local score
-            if priority == "Distance" then
-                score = (W_Dist * (dist3d / 500))
-            else
-                score = (W_Dist * (dist2d / math_max(1, fovLimit)))
-            end
-
-            score = score + (W_Health * (currentHealth / maxHealth))
-            score = score + (W_Angle * (1 - lookDot))
-
-            if not canSee then
-                score = score - 0.6
-            end
-
-            if W_Threat > 0 then
-                local tool = char:FindFirstChildOfClass("Tool")
-                if tool then
-                    score = score + W_Threat
+                local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+                if not onScreen then
+                    rejectStats.offscreen = rejectStats.offscreen + 1
+                    continue
                 end
-            end
 
-            local velocity = GetPartVelocity(part)
-            if velocity.Magnitude > 15 then
-                score = score + 0.4
-            end
+                local deltaX = sp.X - originPoint.X
+                local deltaY = sp.Y - originPoint.Y
+                local normalizedDist = math_sqrt((deltaX / fovX) ^ 2 + (deltaY / fovY) ^ 2)
+                if normalizedDist > 1 then
+                    rejectStats.fov = rejectStats.fov + 1
+                    continue
+                end
 
-            if part == state.CurrentTarget then
-                score = score + TARGET_CURRENT_BONUS
-            end
-            if part == state.StickyTarget then
-                score = score + TARGET_STICKY_BONUS
-            end
-            if part == state.CurrentTarget then
-                currentTargetScore = score
-            end
+                local dist2d = math_sqrt(deltaX * deltaX + deltaY * deltaY)
+                local partPos = part.Position
+                local dist3d = (partPos - camPos).Magnitude
+                local directionToTarget = (partPos - camPos).Unit
+                local lookDot = math_clamp(lookVector:Dot(directionToTarget), -1, 1)
 
-            if score > bestScore then
-                bestScore = score
-                bestTarget = part
+                local canSee = IsVisibleCached(part, char)
+                if canSee then
+                    state.VisibilityUntil[part] = currentTick + TARGET_OCCLUSION_GRACE
+                else
+                    local graceUntil = state.VisibilityUntil[part]
+                    if not graceUntil or graceUntil <= currentTick then
+                        rejectStats.wall = rejectStats.wall + 1
+                        continue
+                    end
+                end
+
+                local maxHealth = (hum and hum.MaxHealth) or 100
+                if maxHealth <= 0 then maxHealth = 100 end
+                local currentHealth = (hum and hum.Health) or 100
+                if hum and currentHealth <= 0 then
+                    rejectStats.dead = rejectStats.dead + 1
+                    continue
+                end
+
+                local score
+                if priority == "Distance" then
+                    score = (W_Dist * (dist3d / 500))
+                else
+                    score = (W_Dist * (dist2d / math_max(1, fovLimit)))
+                end
+
+                score = score + (W_Health * (currentHealth / maxHealth))
+                score = score + (W_Angle * (1 - lookDot))
+
+                if not canSee then
+                    score = score - 0.35
+                end
+
+                if W_Threat > 0 then
+                    local tool = char:FindFirstChildOfClass("Tool")
+                    if tool then
+                        score = score + W_Threat
+                    end
+                end
+
+                local velocity = GetPartVelocity(part)
+                if velocity.Magnitude > 15 then
+                    score = score + 0.18
+                end
+
+                local partPreference = Settings.MultiPointFallback and math_max(0, 0.2 - ((candidate.rank - 1) * 0.06)) or 0
+                local edgePenalty = edgePenaltyWeight * (SmoothStep01(normalizedDist) ^ 1.25)
+                local visibilityBonus = canSee and 0.16 or 0.04
+                local predictabilityBonus = (predictability - 0.5) * 2 * predictabilityWeight
+                local stabilityAge = sameCharacterAsCurrent and
+                    (currentTick - math_max(state.LastTargetSwap or currentTick, state.StickyStartTime or 0)) or 0
+                local stabilityBonus = sameCharacterAsCurrent and
+                    (stabilityWeight * math_clamp(stabilityAge / 0.45, 0, 1)) or 0
+                local stickyBonus = sameCharacterAsSticky and (TARGET_STICKY_BONUS + stabilityWeight * 0.25) or 0
+                local swapAge = currentTick - (state.LastTargetSwap or 0)
+                local switchPenalty = (currentTargetCharacter and (char ~= currentTargetCharacter) and swapAge < 0.22)
+                    and (0.18 * (1 - (swapAge / 0.22))) or 0
+                local maneuverPenalty = 0
+                if maneuver == "dodge" then
+                    maneuverPenalty = 0.18
+                elseif maneuver == "airborne" then
+                    maneuverPenalty = 0.12
+                elseif maneuver == "turn" then
+                    maneuverPenalty = 0.08
+                end
+
+                score = score + visibilityBonus + partPreference + stabilityBonus + stickyBonus + predictabilityBonus
+                score = score - edgePenalty - switchPenalty - maneuverPenalty
+
+                if sameCharacterAsCurrent then
+                    score = score + TARGET_CURRENT_BONUS
+                end
+                if part == state.StickyTarget then
+                    score = score + TARGET_STICKY_BONUS
+                end
+
+                local context = {
+                    player = plr,
+                    character = char,
+                    part = part,
+                    hitbox = candidate.name,
+                    score = score,
+                    confidence = predictability,
+                    maneuver = maneuver,
+                    leadDistance = 0,
+                    reason = "tracking",
+                    targetName = plr.Name,
+                    visible = canSee,
+                    distance2d = dist2d,
+                    distance3d = dist3d
+                }
+
+                if sameCharacterAsCurrent and score > currentTargetScore then
+                    currentTargetScore = score
+                    currentTargetPart = part
+                    currentTargetContext = context
+                end
+
+                if score > bestScore then
+                    bestScore = score
+                    bestTarget = part
+                    bestContext = context
+                end
             end
         end
     end
 
-    if bestTarget and state.CurrentTarget and bestTarget ~= state.CurrentTarget and currentTargetScore > -math_huge then
+    if bestTarget and currentTargetCharacter and bestTarget.Parent ~= currentTargetCharacter and currentTargetScore > -math_huge then
         local switchMargin = TARGET_SWITCH_MARGIN
         if Settings.StickyAim then
             switchMargin = switchMargin + 0.08
         end
         if (bestScore - currentTargetScore) < switchMargin then
-            bestTarget = state.CurrentTarget
+            bestTarget = currentTargetPart or state.CurrentTarget
             bestScore = currentTargetScore
+            bestContext = currentTargetContext or bestContext
         end
     end
 
     local previousTarget = state.CurrentTarget
     state.CurrentTarget = bestTarget
+    state.TargetContext = bestContext
 
     if previousTarget ~= bestTarget then
         state.LastTargetSwap = currentTick
@@ -7432,23 +8062,39 @@ local function GetClosestTarget(fovLimit, hitPartName, originPoint, state)
 
     if bestTarget then
         state.VisibilityUntil[bestTarget] = currentTick + TARGET_OCCLUSION_GRACE
+        state.LastRejectReason = "tracking"
+    else
+        state.LastRejectReason = GetTargetRejectReason(rejectStats)
+        state.TargetContext = {
+            score = -math_huge,
+            confidence = 0,
+            leadDistance = 0,
+            hitbox = "-",
+            reason = state.LastRejectReason,
+            targetName = "-",
+            visible = false,
+            distance2d = math_huge,
+            distance3d = math_huge
+        }
     end
 
     FrameTargetCache.target = bestTarget
+    FrameTargetCache.context = state.TargetContext
     FrameTargetCache.tick = frameTick
     FrameTargetCache.fov = fovLimit
     FrameTargetCache.part = hitPartName
     FrameTargetCache.ox = originX
     FrameTargetCache.oy = originY
+    FrameTargetCache.state = state
 
     return bestTarget
 end
 
 
 task.spawn(function()
-    while _G.CheatLoaded do
+    while IsSessionActive() do
         task.wait(5)
-        if not _G.CheatLoaded then break end
+        if not IsSessionActive() then break end
 
         -- ✅ ОПТИМИЗАЦИЯ: Инкрементальная очистка вместо полного сброса
         local ct = tick()
@@ -7463,7 +8109,7 @@ end)
 -- [NEW v2] RING BUFFER HELPERS
 -- ═══════════════════════════════════════════
 
-local function GetOrCreateBuffer(player)
+function GetOrCreateBuffer(player)
     if not player then return nil end
     local buf = VelocityBuffers[player]
     if buf then return buf end
@@ -7485,7 +8131,7 @@ local function GetOrCreateBuffer(player)
     return buf
 end
 
-local function PushSample(buf, velocity, currentTime)
+function PushSample(buf, velocity, currentTime)
     if not buf then return end
     local sample = buf.samples[buf.head]
     sample.vel = velocity
@@ -7498,7 +8144,7 @@ local function PushSample(buf, velocity, currentTime)
     buf.lastUpdate = currentTime
 end
 
-local function IterateBufferNewToOld(buf, callback)
+function IterateBufferNewToOld(buf, callback)
     if not buf or buf.count == 0 then return end
     local idx = ((buf.head - 2) % PredConst.RING_BUFFER_SIZE) + 1
     for i = 1, buf.count do
@@ -7510,7 +8156,7 @@ local function IterateBufferNewToOld(buf, callback)
     end
 end
 
-local function IsAnomalousVelocity(newVel, prevVel, dt)
+function IsAnomalousVelocity(newVel, prevVel, dt)
     if newVel.Magnitude > PredConst.ANOMALY_SPEED_THRESHOLD then
         return true
     end
@@ -7527,7 +8173,7 @@ end
 -- [NEW v2] ENVIRONMENT RAYCAST CLAMP
 -- ═══════════════════════════════════════════
 
-local function ClampPredictionToEnvironment(currentPos, predictedPos, character)
+function ClampPredictionToEnvironment(currentPos, predictedPos, character)
     if not currentPos or not predictedPos then return predictedPos, nil end
     local delta = predictedPos - currentPos
     local dist = delta.Magnitude
@@ -7553,7 +8199,7 @@ end
 -- [IMPROVED v2] VELOCITY SMOOTHING (Ring Buffer + Anomaly Filter)
 -- ═══════════════════════════════════════════
 
-local function GetSmoothedVelocity(player, currentVelocity)
+function GetSmoothedVelocity(player, currentVelocity)
     if not Settings.VelocitySmoothing then
         return currentVelocity
     end
@@ -7614,7 +8260,7 @@ end
 -- [IMPROVED v2] ACCELERATION (EMA Smoothed, Multi-Sample)
 -- ═══════════════════════════════════════════
 
-local function GetEstimatedAcceleration(player)
+function GetEstimatedAcceleration(player)
     local buf = VelocityBuffers[player]
     if not buf or buf.count < 2 then
         return v3_new(0, 0, 0)
@@ -7662,7 +8308,7 @@ end
 
 -- Cleanup velocity buffers
 task.spawn(function()
-    while _G.CheatLoaded do
+    while IsSessionActive() do
         task.wait(10)
         local currentTime = tick()
         for player, buf in pairs(VelocityBuffers) do
@@ -7686,7 +8332,7 @@ end)
 
 -- ✅ ОПТИМИЗАЦИЯ: Кеш пинга (обновляется раз в 0.5 сек вместо каждого кадра)
 local _PingCache = { val = 0, time = 0 }
-local function GetCachedPing()
+function GetCachedPing()
     local t = tick()
     if t - _PingCache.time > 0.5 then
         _PingCache.val = LocalPlayer:GetNetworkPing()
@@ -7697,12 +8343,12 @@ end
 
 --// BEZIER & MATH HELPERS //--
 
-local function BezierCubic(t, p0, p1, p2, p3)
+function BezierCubic(t, p0, p1, p2, p3)
     return (1 - t) ^ 3 * p0 + 3 * (1 - t) ^ 2 * t * p1 + 3 * (1 - t) * t ^ 2 * p2 + t ^ 3 * p3
 end
 
 -- Generates control points for a "human-like" arc
-local function GetBezierPoints(startPos, endPos, intensity, bias1, bias2)
+function GetBezierPoints(startPos, endPos, intensity, bias1, bias2)
     local distance = (endPos - startPos).Magnitude
     if distance < 5 then return startPos, endPos, endPos, endPos end -- Too close for curves
 
@@ -8014,7 +8660,7 @@ PredConst.ClassifyPredictionManeuver = function(character, velocity, acceleratio
     return "stable", 0.85, 1.25, 1.0
 end
 
-local function GetPredictedPos(targetPart, targetPlayer)
+function GetPredictedPos(targetPart, targetPlayer)
     if not targetPart then
         return v3_new(0, 0, 0)
     end
@@ -8214,6 +8860,13 @@ local function GetPredictedPos(targetPart, targetPlayer)
     predictedPos = measuredPos + (predictedPos - measuredPos) * finalConfidence
 
     if targetPlayer then
+        PredictionMetaCache[targetPlayer] = {
+            tick = frameTick,
+            part = targetPart,
+            confidence = finalConfidence,
+            maneuver = (kalmanState and kalmanState.lastManeuver) or "stable",
+            leadDistance = (predictedPos - measuredPos).Magnitude
+        }
         PredictionFrameCache[targetPlayer] = {
             tick = frameTick,
             part = targetPart,
@@ -8258,12 +8911,17 @@ CheatEnv.UpdateAutoShot = function()
 
     if not Settings.AutoShot then
         state.CurrentTarget = nil
+        state.TargetSince = 0
+        state.EligibleSince = 0
+        state.LastGateReason = "disabled"
+        state.DebugInfo = nil
         CheatEnv.AutoShotNextShot = 0
         return
     end
 
     if not Camera or (MainFrame and MainFrame.Visible) then
         state.CurrentTarget = nil
+        state.EligibleSince = 0
         return
     end
 
@@ -8280,31 +8938,164 @@ CheatEnv.UpdateAutoShot = function()
     state.LastUpdate = now
 
     local origin = GetScreenPosition(Settings.AimbotMode or "Old")
+    local previousTarget = state.CurrentTarget
     local targetPart = GetClosestTarget(Settings.AimbotFOV or 100, Settings.AimbotPart or "Head", origin, state)
-    state.CurrentTarget = targetPart
     if not targetPart then
+        state.CurrentTarget = nil
+        state.TargetSince = 0
+        state.EligibleSince = 0
+        state.LastGateReason = state.LastRejectReason or "no target"
+        state.DebugInfo = {
+            targetName = "-",
+            hitbox = "-",
+            confidence = 0,
+            lead = 0,
+            score = 0,
+            reason = state.LastGateReason
+        }
+        return
+    end
+
+    if previousTarget ~= targetPart then
+        state.CurrentTarget = targetPart
+        state.TargetSince = now
+        state.EligibleSince = 0
+    elseif (state.TargetSince or 0) <= 0 then
+        state.TargetSince = now
+    end
+
+    local targetPlayer = targetPart.Parent and ResolvePlayerFromCharacterModel(targetPart.Parent) or nil
+    local solution = BuildAimSolution(targetPart, targetPlayer, origin)
+    if not solution or not solution.onScreen then
+        state.EligibleSince = 0
+        state.LastGateReason = "off screen"
+        state.DebugInfo = {
+            targetName = targetPlayer and targetPlayer.Name or targetPart.Name,
+            hitbox = state.TargetContext and state.TargetContext.hitbox or targetPart.Name,
+            confidence = solution and solution.confidence or 0,
+            lead = solution and solution.leadDistance or 0,
+            score = state.TargetContext and state.TargetContext.score or 0,
+            reason = state.LastGateReason
+        }
+        return
+    end
+
+    local switchCooldown = math_clamp(Settings.AutoShotSwitchCooldown or 0.1, 0, 0.5)
+    if (now - (state.LastTargetSwap or now)) < switchCooldown then
+        state.EligibleSince = 0
+        state.LastGateReason = "switch cooldown"
+        state.DebugInfo = {
+            targetName = targetPlayer and targetPlayer.Name or targetPart.Name,
+            hitbox = state.TargetContext and state.TargetContext.hitbox or targetPart.Name,
+            confidence = solution.confidence,
+            lead = solution.leadDistance,
+            score = state.TargetContext and state.TargetContext.score or 0,
+            reason = state.LastGateReason
+        }
+        return
+    end
+
+    local minConfidence = math_clamp(Settings.AutoShotMinConfidence or 0.42, 0, 1)
+    if solution.confidence < minConfidence then
+        state.EligibleSince = 0
+        state.LastGateReason = "low confidence"
+        state.DebugInfo = {
+            targetName = targetPlayer and targetPlayer.Name or targetPart.Name,
+            hitbox = state.TargetContext and state.TargetContext.hitbox or targetPart.Name,
+            confidence = solution.confidence,
+            lead = solution.leadDistance,
+            score = state.TargetContext and state.TargetContext.score or 0,
+            reason = state.LastGateReason
+        }
+        return
+    end
+
+    if Settings.AutoShotRequireLOS and not IsVisible(targetPart, targetPart.Parent) then
+        state.EligibleSince = 0
+        state.LastGateReason = "los gated"
+        state.DebugInfo = {
+            targetName = targetPlayer and targetPlayer.Name or targetPart.Name,
+            hitbox = state.TargetContext and state.TargetContext.hitbox or targetPart.Name,
+            confidence = solution.confidence,
+            lead = solution.leadDistance,
+            score = state.TargetContext and state.TargetContext.score or 0,
+            reason = state.LastGateReason
+        }
+        return
+    end
+
+    local alignmentRadius = math_max(2.5, (solution.deadzone or 0) + 1.5)
+    if solution.distance2d > alignmentRadius then
+        state.EligibleSince = 0
+        state.LastGateReason = "alignment"
+        state.DebugInfo = {
+            targetName = targetPlayer and targetPlayer.Name or targetPart.Name,
+            hitbox = state.TargetContext and state.TargetContext.hitbox or targetPart.Name,
+            confidence = solution.confidence,
+            lead = solution.leadDistance,
+            score = state.TargetContext and state.TargetContext.score or 0,
+            reason = state.LastGateReason
+        }
+        return
+    end
+
+    if (state.EligibleSince or 0) <= 0 then
+        state.EligibleSince = now
+    end
+
+    local holdTime = math_clamp(Settings.AutoShotHoldTime or 0.08, 0, 0.4)
+    if (now - state.EligibleSince) < holdTime then
+        state.LastGateReason = "holding"
+        state.DebugInfo = {
+            targetName = targetPlayer and targetPlayer.Name or targetPart.Name,
+            hitbox = state.TargetContext and state.TargetContext.hitbox or targetPart.Name,
+            confidence = solution.confidence,
+            lead = solution.leadDistance,
+            score = state.TargetContext and state.TargetContext.score or 0,
+            reason = state.LastGateReason
+        }
         return
     end
 
     local delaySec = math_clamp(Settings.AutoShotDelay or 110, 10, 500) / 1000
     if now < (CheatEnv.AutoShotNextShot or 0) then
+        state.LastGateReason = "shot delay"
+        state.DebugInfo = {
+            targetName = targetPlayer and targetPlayer.Name or targetPart.Name,
+            hitbox = state.TargetContext and state.TargetContext.hitbox or targetPart.Name,
+            confidence = solution.confidence,
+            lead = solution.leadDistance,
+            score = state.TargetContext and state.TargetContext.score or 0,
+            reason = state.LastGateReason
+        }
         return
     end
 
     CheatEnv.AutoShotNextShot = now + delaySec
+    state.LastGateReason = "fired"
+    state.DebugInfo = {
+        targetName = targetPlayer and targetPlayer.Name or targetPart.Name,
+        hitbox = state.TargetContext and state.TargetContext.hitbox or targetPart.Name,
+        confidence = solution.confidence,
+        lead = solution.leadDistance,
+        score = state.TargetContext and state.TargetContext.score or 0,
+        reason = state.LastGateReason
+    }
     if CheatEnv.TriggerAutoShotClick then
         CheatEnv.TriggerAutoShotClick()
     end
 end
 
-local function UpdateAimbot()
+function UpdateAimbot()
     if not Camera then return end
 
     if not IsAimbotActive() then
         FOVRing.Visible = false
         AimbotState.CurrentTarget = nil
+        AimbotState.TargetSolution = nil
         PredConst.ResetHumanizerState(AimbotState)
         UpdateTargetIndicator(Vector2.new(0, 0), false)
+        AimbotState.DebugInfo = nil
         return
     end
 
@@ -8332,12 +9123,29 @@ local function UpdateAimbot()
     local TargetPart = GetClosestTarget(Settings.AimbotFOV, Settings.AimbotPart or "Head", Origin, AimbotState)
     if not TargetPart then
         AimbotState.CurrentTarget = nil
+        AimbotState.TargetSolution = nil
         PredConst.ResetHumanizerState(AimbotState)
         UpdateTargetIndicator(Vector2.new(0, 0), false)
+        AimbotState.DebugInfo = {
+            targetName = "-",
+            hitbox = "-",
+            confidence = 0,
+            lead = 0,
+            score = 0,
+            reason = AimbotState.LastRejectReason or "no target"
+        }
         return
     end
 
     if Settings.ReactionTime > 0 and (now - AimbotState.StickyStartTime) < Settings.ReactionTime then
+        AimbotState.DebugInfo = {
+            targetName = AimbotState.TargetContext and AimbotState.TargetContext.targetName or TargetPart.Name,
+            hitbox = AimbotState.TargetContext and AimbotState.TargetContext.hitbox or TargetPart.Name,
+            confidence = AimbotState.TargetContext and AimbotState.TargetContext.confidence or 0,
+            lead = 0,
+            score = AimbotState.TargetContext and AimbotState.TargetContext.score or 0,
+            reason = "reaction delay"
+        }
         return
     end
 
@@ -8346,20 +9154,27 @@ local function UpdateAimbot()
         targetPlayer = ResolvePlayerFromCharacterModel(TargetPart.Parent)
     end
 
-    local GoalPosition = GetPredictedPos(TargetPart, targetPlayer)
-    local ScreenPos, OnScreen = Camera:WorldToViewportPoint(GoalPosition)
-    if not OnScreen then
+    local solution = BuildAimSolution(TargetPart, targetPlayer, Origin)
+    AimbotState.TargetSolution = solution
+    if not solution or not solution.onScreen then
         UpdateTargetIndicator(Vector2.new(0, 0), false)
+        AimbotState.DebugInfo = {
+            targetName = targetPlayer and targetPlayer.Name or TargetPart.Name,
+            hitbox = AimbotState.TargetContext and AimbotState.TargetContext.hitbox or TargetPart.Name,
+            confidence = solution and solution.confidence or 0,
+            lead = solution and solution.leadDistance or 0,
+            score = AimbotState.TargetContext and AimbotState.TargetContext.score or 0,
+            reason = "off screen"
+        }
         return
     end
 
-    local dist3d = (TargetPart.Position - Camera.CFrame.Position).Magnitude
-    local targetVelocity = GetPartVelocity(TargetPart)
-    local velocityMag = targetVelocity.Magnitude
+    local dist3d = solution.dist3d
+    local targetVelocity = solution.velocity
+    local velocityMag = solution.velocityMag
     local smoothMode = Settings.AimbotSmoothMode or "Old"
-    local baseDeadzone = Settings.Deadzone or 0
-    local effectiveDeadzone = GetDynamicDeadzone(baseDeadzone, velocityMag, dist3d)
-    local targetScreenPoint = v2_new(ScreenPos.X, ScreenPos.Y)
+    local effectiveDeadzone = solution.deadzone or GetDynamicDeadzone(Settings.Deadzone or 0, velocityMag, dist3d)
+    local targetScreenPoint = solution.screenPoint
     local aimPoint = targetScreenPoint
     local humanizeSmoothScale, humanizeStepScale = 1, 1
 
@@ -8369,7 +9184,7 @@ local function UpdateAimbot()
             TargetPart,
             Origin,
             targetScreenPoint,
-            GoalPosition,
+            solution.goalPosition,
             targetVelocity,
             now,
             Settings.HumanizePower,
@@ -8380,6 +9195,14 @@ local function UpdateAimbot()
     end
 
     UpdateTargetIndicator(targetScreenPoint, true)
+    AimbotState.DebugInfo = {
+        targetName = targetPlayer and targetPlayer.Name or TargetPart.Name,
+        hitbox = AimbotState.TargetContext and AimbotState.TargetContext.hitbox or TargetPart.Name,
+        confidence = solution.confidence,
+        lead = solution.leadDistance,
+        score = AimbotState.TargetContext and AimbotState.TargetContext.score or 0,
+        reason = "tracking/" .. ((solution.movement and solution.movement.name) or "stable")
+    }
 
     if currentAimbotMode == "Mousemoverel" then
         local mousePos = UserInputService:GetMouseLocation()
@@ -8387,6 +9210,7 @@ local function UpdateAimbot()
         local dist = delta.Magnitude
 
         if dist <= effectiveDeadzone then
+            AimbotState.DebugInfo.reason = "inside deadzone"
             return
         end
 
@@ -8398,7 +9222,8 @@ local function UpdateAimbot()
             Settings.AdaptiveSmoothing,
             smoothMode,
             Settings.FlickBot,
-            Settings.FlickSpeed
+            Settings.FlickSpeed,
+            solution.movement
         )
         smooth = math_clamp(smooth * humanizeSmoothScale, 0.01, 1)
 
@@ -8408,7 +9233,8 @@ local function UpdateAimbot()
             move = move + v2_new(math_random(-1, 1) / 10, math_random(-1, 1) / 10)
         end
 
-        local maxStep = 900 * (0.55 + normalized * 0.65) * humanizeStepScale
+        local maxStep = 900 * (0.55 + normalized * 0.65) * humanizeStepScale *
+            ((solution.movement and solution.movement.stepScale) or 1)
         if move.Magnitude > maxStep then
             move = move.Unit * maxStep
         end
@@ -8428,7 +9254,8 @@ local function UpdateAimbot()
                 Settings.AdaptiveSmoothing,
                 smoothMode,
                 Settings.FlickBot,
-                Settings.FlickSpeed
+                Settings.FlickSpeed,
+                solution.movement
             )
 
             if Settings.Humanize then
@@ -8442,6 +9269,8 @@ local function UpdateAimbot()
                 CFrame.new(Camera.CFrame.Position, lookTarget),
                 finalSmooth
             )
+        else
+            AimbotState.DebugInfo.reason = "inside deadzone"
         end
     end
 end
@@ -8450,8 +9279,8 @@ local CurrentAimlockTarget = nil
 local LastTargetTime = 0
 local TARGET_LOCK_TIME = 0.15 -- 150 мс
 
-local function IsAimlockTargetValid(targetPart, state, currentTime)
-    local function resetVisibility()
+function IsAimlockTargetValid(targetPart, state, currentTime)
+    function resetVisibility()
         if not targetPart then
             return
         end
@@ -8509,11 +9338,11 @@ local function IsAimlockTargetValid(targetPart, state, currentTime)
     return true
 end
 
-local function UpdateAimlock()
+function UpdateAimlock()
     if not Settings.Aimlock then
         AimlockRing.Visible = false
         CurrentAimlockTarget = nil
-        AimlockState.CurrentTarget = nil
+        ResetAimlockRuntimeState()
         PredConst.ResetHumanizerState(AimlockState)
         return
     end
@@ -8530,12 +9359,20 @@ local function UpdateAimlock()
 
     local currentAimlockMode = Settings.AimlockTargetMode or "Old"
     local forceStick = Settings.AimlockForceStick == true
+    local softLockEnabled = forceStick and Settings.AimlockSoftLock ~= false
+    local softLockTime = math_clamp(Settings.AimlockSoftLockTime or 0.14, 0.05, 0.5)
+    local releaseConfidence = math_clamp(Settings.AimlockReleaseConfidence or 0.34, 0.05, 1)
     local origin = GetScreenPosition(currentAimlockMode)
 
     if not IsAimbotActive("Aimlock") then
         AimlockRing.Visible = false
         CurrentAimlockTarget = nil
         AimlockState.CurrentTarget = nil
+        AimlockState.TargetSolution = nil
+        AimlockState.PendingLockTarget = nil
+        AimlockState.HardLockTarget = nil
+        AimlockState.HardLockActive = false
+        AimlockState.DebugInfo = nil
         PredConst.ResetHumanizerState(AimlockState)
         return
     end
@@ -8562,11 +9399,31 @@ local function UpdateAimlock()
     end
 
     if not targetPart then
+        AimlockState.TargetSolution = nil
+        AimlockState.PendingLockTarget = nil
+        AimlockState.HardLockTarget = nil
+        AimlockState.HardLockActive = false
         PredConst.ResetHumanizerState(AimlockState)
+        AimlockState.DebugInfo = {
+            targetName = "-",
+            hitbox = "-",
+            confidence = 0,
+            lead = 0,
+            score = 0,
+            reason = AimlockState.LastRejectReason or "no target"
+        }
         return
     end
 
     if Settings.ReactionTime > 0 and (now - AimlockState.StickyStartTime) < Settings.ReactionTime then
+        AimlockState.DebugInfo = {
+            targetName = AimlockState.TargetContext and AimlockState.TargetContext.targetName or targetPart.Name,
+            hitbox = AimlockState.TargetContext and AimlockState.TargetContext.hitbox or targetPart.Name,
+            confidence = AimlockState.TargetContext and AimlockState.TargetContext.confidence or 0,
+            lead = 0,
+            score = AimlockState.TargetContext and AimlockState.TargetContext.score or 0,
+            reason = "reaction delay"
+        }
         return
     end
 
@@ -8575,30 +9432,60 @@ local function UpdateAimlock()
         targetPlayer = ResolvePlayerFromCharacterModel(targetPart.Parent)
     end
 
-    local goalPosition = GetPredictedPos(targetPart, targetPlayer)
-    local screenPos, onScreen = Camera:WorldToViewportPoint(goalPosition)
-    if not onScreen then
+    local solution = BuildAimSolution(targetPart, targetPlayer, origin)
+    AimlockState.TargetSolution = solution
+    if not solution or not solution.onScreen then
         if forceStick then
             CurrentAimlockTarget = nil
+            AimlockState.PendingLockTarget = nil
+            AimlockState.HardLockTarget = nil
+            AimlockState.HardLockActive = false
         end
+        AimlockState.DebugInfo = {
+            targetName = targetPlayer and targetPlayer.Name or targetPart.Name,
+            hitbox = AimlockState.TargetContext and AimlockState.TargetContext.hitbox or targetPart.Name,
+            confidence = solution and solution.confidence or 0,
+            lead = solution and solution.leadDistance or 0,
+            score = AimlockState.TargetContext and AimlockState.TargetContext.score or 0,
+            reason = "off screen"
+        }
         return
     end
 
+    if AimlockState.PendingLockTarget ~= targetPart then
+        AimlockState.PendingLockTarget = targetPart
+        AimlockState.PendingLockSince = now
+        AimlockState.HardLockTarget = targetPart
+        AimlockState.HardLockActive = forceStick and not softLockEnabled
+    elseif forceStick and (not AimlockState.HardLockActive) then
+        local pendingFor = now - (AimlockState.PendingLockSince or now)
+        if (not softLockEnabled or pendingFor >= softLockTime) and solution.confidence >= releaseConfidence then
+            AimlockState.HardLockActive = true
+            AimlockState.HardLockTarget = targetPart
+        end
+    end
+
+    local useHardLock = forceStick and AimlockState.HardLockActive and AimlockState.HardLockTarget == targetPart
+    if useHardLock and solution.confidence < releaseConfidence then
+        AimlockState.HardLockActive = false
+        useHardLock = false
+    end
+
     local smoothMode = Settings.AimlockSmoothMode or "Old"
-    local targetVelocity = GetPartVelocity(targetPart)
-    local dist3d = (targetPart.Position - Camera.CFrame.Position).Magnitude
-    local deadzone = GetDynamicDeadzone(Settings.Deadzone or 3, targetVelocity.Magnitude, dist3d)
-    local targetScreenPoint = v2_new(screenPos.X, screenPos.Y)
+    local targetVelocity = solution.velocity
+    local dist3d = solution.dist3d
+    local deadzone = solution.deadzone or GetDynamicDeadzone(Settings.Deadzone or 3, targetVelocity.Magnitude, dist3d)
+    local targetScreenPoint = solution.screenPoint
     local aimPoint = targetScreenPoint
     local humanizeSmoothScale, humanizeStepScale = 1, 1
 
-    if Settings.Humanize and not forceStick then
+    if Settings.Humanize and not useHardLock then
         aimPoint, humanizeSmoothScale, humanizeStepScale = PredConst.GetHumanizedScreenPoint(
             AimlockState,
             targetPart,
             origin,
             targetScreenPoint,
-            goalPosition,
+            solution.goalPosition,
             targetVelocity,
             now,
             (Settings.HumanizePower or 1) * 0.85,
@@ -8608,11 +9495,22 @@ local function UpdateAimlock()
         PredConst.ResetHumanizerState(AimlockState)
     end
 
+    AimlockState.DebugInfo = {
+        targetName = targetPlayer and targetPlayer.Name or targetPart.Name,
+        hitbox = AimlockState.TargetContext and AimlockState.TargetContext.hitbox or targetPart.Name,
+        confidence = solution.confidence,
+        lead = solution.leadDistance,
+        score = AimlockState.TargetContext and AimlockState.TargetContext.score or 0,
+        reason = useHardLock and "hard lock" or
+            ((forceStick and softLockEnabled) and "soft lock/" .. ((solution.movement and solution.movement.name) or "stable")
+                or "tracking/" .. ((solution.movement and solution.movement.name) or "stable"))
+    }
+
     if currentAimlockMode == "Mousemoverel" then
         local mousePos = UserInputService:GetMouseLocation()
         local delta = aimPoint - mousePos
 
-        if forceStick then
+        if useHardLock then
             if delta.Magnitude > 1200 then
                 delta = delta.Unit * 1200
             end
@@ -8624,6 +9522,7 @@ local function UpdateAimlock()
 
         local distance = delta.Magnitude
         if distance <= deadzone then
+            AimlockState.DebugInfo.reason = "inside deadzone"
             return
         end
 
@@ -8635,7 +9534,8 @@ local function UpdateAimlock()
             Settings.AdaptiveSmoothing,
             smoothMode,
             false,
-            nil
+            nil,
+            solution.movement
         )
         smoothFactor = math_clamp(smoothFactor * humanizeSmoothScale, 0.01, 1)
 
@@ -8652,7 +9552,8 @@ local function UpdateAimlock()
         end
 
         local move = delta * smoothFactor
-        local maxStep = 780 * (0.6 + normalized * 0.5) * humanizeStepScale
+        local maxStep = 780 * (0.6 + normalized * 0.5) * humanizeStepScale *
+            ((solution.movement and solution.movement.stepScale) or 1)
         if move.Magnitude > maxStep then
             move = move.Unit * maxStep
         end
@@ -8667,7 +9568,7 @@ local function UpdateAimlock()
         local lookTarget = camPos + (aimRay.Direction * dist3d)
         local lookCF = CFrame.new(camPos, lookTarget)
 
-        if forceStick then
+        if useHardLock then
             Camera.CFrame = lookCF
             return
         end
@@ -8682,10 +9583,13 @@ local function UpdateAimlock()
                 Settings.AdaptiveSmoothing,
                 smoothMode,
                 false,
-                nil
+                nil,
+                solution.movement
             )
             smooth = math_clamp(smooth * humanizeSmoothScale, 0.01, 1)
             Camera.CFrame = camCF:Lerp(lookCF, smooth)
+        else
+            AimlockState.DebugInfo.reason = "inside deadzone"
         end
     end
 end
@@ -8699,14 +9603,14 @@ MM2_Data.Roles = MM2_Data.Roles or {}
 MM2_Data.GunDrops = MM2_Data.GunDrops or {}
 
 -- Функция определения роли (из mm2.lua)
-local function GetMM2Role(player)
+function GetMM2Role(player)
     if not player or not player.Character then return "Player" end
 
     local char = player.Character
     local backpack = player:FindFirstChild("Backpack")
 
     -- Проверка ножа
-    local function checkMurd(container)
+    function checkMurd(container)
         if not container then return false end
         local knife = container:FindFirstChild("Knife") or container:FindFirstChild("Slash")
         if knife then return true end
@@ -8717,7 +9621,7 @@ local function GetMM2Role(player)
     end
 
     -- Проверка пистолета
-    local function checkGun(container)
+    function checkGun(container)
         if not container then return false end
         if container:FindFirstChild("Gun") or container:FindFirstChild("Revolver") then return true end
         for _, tool in ipairs(container:GetChildren()) do
@@ -8738,7 +9642,7 @@ end
 if MM2_Data.IsMM2 then
     -- Обновление ролей раз в 0.5 сек
     task.spawn(function()
-        while _G.CheatLoaded do
+        while IsSessionActive() do
             for _, player in ipairs(Players:GetPlayers()) do
                 if player ~= LocalPlayer then
                     MM2_Data.Roles[player] = GetMM2Role(player)
@@ -8750,7 +9654,7 @@ if MM2_Data.IsMM2 then
 
     -- Поиск выпавшего пистолета раз в 2 сек
     task.spawn(function()
-        while _G.CheatLoaded do
+        while IsSessionActive() do
             local drops = {}
             for _, obj in ipairs(Workspace:GetChildren()) do
                 if obj.Name == "GunDrop" or (obj:IsA("Tool") and obj:FindFirstChild("IsGun")) then
@@ -8766,7 +9670,7 @@ end
 -- Для отрисовки GunDrop нам понадобится отдельное хранилище Drawing
 local DropDrawings = {}
 
-local function UpdateGunDropESP()
+function UpdateGunDropESP()
     -- ✅ РАННИЙ ВЫХОД если ESP выключен или это не MM2
     if not MM2_Data.IsMM2 or not Settings.ESP then
         for _, d in pairs(DropDrawings) do
@@ -8849,7 +9753,7 @@ end
 
 --// SCP:RP TEAM CHECK HELPERS (Moved Up) //--
 
-local function GetSCPRP_Mode(player)
+function GetSCPRP_Mode(player)
     if not player or not player.Team then return nil end
 
     local teamName = player.Team.Name
@@ -8865,7 +9769,7 @@ local function GetSCPRP_Mode(player)
     return nil
 end
 
-local function SCPRP_AdvancedTeamCheck(targetPlayer)
+function SCPRP_AdvancedTeamCheck(targetPlayer)
     if not Settings.AdvancedTeamCheck then
         return true -- обычный ESP
     end
@@ -8895,7 +9799,7 @@ local function SCPRP_AdvancedTeamCheck(targetPlayer)
     return false
 end
 
-local function GetSCPRP_ESPColor(targetPlayer)
+function GetSCPRP_ESPColor(targetPlayer)
     if not Settings.AdvancedTeamCheck then
         return Settings.BoxColor
     end
@@ -8914,38 +9818,105 @@ local function GetSCPRP_ESPColor(targetPlayer)
     return Settings.BoxColor
 end
 
+CheatEnv.SkeletonRigSpecs = {
+    R15 = {
+        PartNames = {
+            "Head", "UpperTorso", "LowerTorso",
+            "LeftUpperArm", "LeftLowerArm", "LeftHand",
+            "RightUpperArm", "RightLowerArm", "RightHand",
+            "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+            "RightUpperLeg", "RightLowerLeg", "RightFoot"
+        },
+        Links = {
+            { "Head", "UpperTorso" },
+            { "UpperTorso", "LowerTorso" },
+            { "UpperTorso", "LeftUpperArm" },
+            { "LeftUpperArm", "LeftLowerArm" },
+            { "LeftLowerArm", "LeftHand" },
+            { "UpperTorso", "RightUpperArm" },
+            { "RightUpperArm", "RightLowerArm" },
+            { "RightLowerArm", "RightHand" },
+            { "LowerTorso", "LeftUpperLeg" },
+            { "LeftUpperLeg", "LeftLowerLeg" },
+            { "LeftLowerLeg", "LeftFoot" },
+            { "LowerTorso", "RightUpperLeg" },
+            { "RightUpperLeg", "RightLowerLeg" },
+            { "RightLowerLeg", "RightFoot" }
+        }
+    },
+    R6 = {
+        PartNames = { "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" },
+        Links = {
+            { "Head", "Torso" },
+            { "Torso", "Left Arm" },
+            { "Torso", "Right Arm" },
+            { "Torso", "Left Leg" },
+            { "Torso", "Right Leg" }
+        }
+    }
+}
 
-
--- [OPTIMIZED] Helper to hide all ESP elements for a player
-local function HideAllESP(data)
-    if not data then return end
-    data.BoxOutline.Visible = false
-    data.Box.Visible = false
-    data.BoxFill.Visible = false
-    data.Tag.Visible = false
-    data.DistanceTag.Visible = false
-    data.WeaponTag.Visible = false
-    data.HealthBarOutline.Visible = false
-    data.HealthBar.Visible = false
-    data.HealthText.Visible = false
-    if data.TopBar then data.TopBar.Visible = false end
-    if data.Tracer then data.Tracer.Visible = false end
-    if data.Skeleton then
-        for _, l in ipairs(data.Skeleton) do l.Visible = false end
-    end
-    -- Corner box lines + outlines
-    if data.CornerLines then
-        for _, l in ipairs(data.CornerLines) do l.Visible = false end
-    end
-    if data.CornerOutlines then
-        for _, l in ipairs(data.CornerOutlines) do l.Visible = false end
-    end
-    if data.Chams then
-        data.Chams.Enabled = false
+CheatEnv.SetDrawingVisible = function(drawing, visible)
+    if drawing and drawing.Visible ~= visible then
+        drawing.Visible = visible
     end
 end
 
-local function CreateESP(player)
+CheatEnv.SetDrawingText = function(drawing, text)
+    if drawing and drawing.Text ~= text then
+        drawing.Text = text
+    end
+end
+
+
+
+-- [OPTIMIZED] Helper to hide all ESP elements for a player
+function HideAllESP(data)
+    if not data then return end
+    if data.Hidden then
+        if data.Chams and data.Chams.Enabled then
+            data.Chams.Enabled = false
+            data.LastChamsEnabled = false
+        end
+        return
+    end
+
+    CheatEnv.SetDrawingVisible(data.BoxOutline, false)
+    CheatEnv.SetDrawingVisible(data.Box, false)
+    CheatEnv.SetDrawingVisible(data.BoxFill, false)
+    CheatEnv.SetDrawingVisible(data.Tag, false)
+    CheatEnv.SetDrawingVisible(data.DistanceTag, false)
+    CheatEnv.SetDrawingVisible(data.WeaponTag, false)
+    CheatEnv.SetDrawingVisible(data.HealthBarOutline, false)
+    CheatEnv.SetDrawingVisible(data.HealthBar, false)
+    CheatEnv.SetDrawingVisible(data.HealthText, false)
+    if data.TopBar then CheatEnv.SetDrawingVisible(data.TopBar, false) end
+    if data.Tracer then CheatEnv.SetDrawingVisible(data.Tracer, false) end
+
+    if data.Skeleton and (data.ActiveSkeletonLines or 0) > 0 then
+        for i = 1, data.ActiveSkeletonLines do
+            CheatEnv.SetDrawingVisible(data.Skeleton[i], false)
+        end
+        data.ActiveSkeletonLines = 0
+    end
+
+    if data.CornerLines and data.CornerBoxVisible then
+        for _, l in ipairs(data.CornerLines) do CheatEnv.SetDrawingVisible(l, false) end
+    end
+    if data.CornerOutlines and data.CornerBoxVisible then
+        for _, l in ipairs(data.CornerOutlines) do CheatEnv.SetDrawingVisible(l, false) end
+    end
+    data.CornerBoxVisible = false
+
+    if data.Chams and data.Chams.Enabled then
+        data.Chams.Enabled = false
+        data.LastChamsEnabled = false
+    end
+
+    data.Hidden = true
+end
+
+function CreateESP(player)
     if ESP_Storage[player] then return end
 
     -- Box shadow (thin black outline for depth)
@@ -9087,7 +10058,20 @@ local function CreateESP(player)
         HealthBar = HealthBar,
         HealthText = HealthText,
         Player = player,
-        LastUpdate = 0
+        LastUpdate = 0,
+        Hidden = true,
+        CornerBoxVisible = false,
+        ActiveSkeletonLines = 0,
+        CachedCharacter = nil,
+        CachedRigType = nil,
+        SkeletonPartCache = nil,
+        LastChamsEnabled = false,
+        LastChamsColor = nil,
+        LastChamsDepthMode = nil,
+        LastChamsAdornee = nil,
+        LastNameText = nil,
+        LastToolName = nil,
+        LastDistanceText = nil
     }
 
     table.insert(CheatEnv.Drawings, BoxOutline)
@@ -9106,7 +10090,7 @@ local function CreateESP(player)
     for _, line in ipairs(CornerOutlines) do table.insert(CheatEnv.Drawings, line) end
 end
 
-local function RemoveESP(player)
+function RemoveESP(player)
     if ESP_Storage[player] then
         pcall(function()
             local d = ESP_Storage[player]
@@ -9127,7 +10111,7 @@ local function RemoveESP(player)
             if d.CornerOutlines then for _, l in ipairs(d.CornerOutlines) do l:Remove() end end
 
             -- Clean up references from CheatEnv.Drawings to prevent memory leak
-            local function removeFromDrawings(obj)
+            function removeFromDrawings(obj)
                 for i = #CheatEnv.Drawings, 1, -1 do
                     if CheatEnv.Drawings[i] == obj then
                         table.remove(CheatEnv.Drawings, i)
@@ -9154,12 +10138,15 @@ local function RemoveESP(player)
     end
 end
 
-local function UpdatePlayerChams(player, data, color, shouldEnable)
+function UpdatePlayerChams(player, data, color, shouldEnable)
     if not data then return end
 
     if not shouldEnable then
         if data.Chams then
-            data.Chams.Enabled = false
+            if data.Chams.Enabled then
+                data.Chams.Enabled = false
+            end
+            data.LastChamsEnabled = false
         end
         return
     end
@@ -9167,7 +10154,10 @@ local function UpdatePlayerChams(player, data, color, shouldEnable)
     local char = ResolveCharacterModel(player)
     if not player or not char then
         if data.Chams then
-            data.Chams.Enabled = false
+            if data.Chams.Enabled then
+                data.Chams.Enabled = false
+            end
+            data.LastChamsEnabled = false
         end
         return
     end
@@ -9186,18 +10176,35 @@ local function UpdatePlayerChams(player, data, color, shouldEnable)
         highlight.Enabled = true
         data.Chams = highlight
         table.insert(CheatEnv.UI, highlight)
+        data.LastChamsAdornee = nil
+        data.LastChamsColor = nil
+        data.LastChamsDepthMode = nil
+        data.LastChamsEnabled = false
     end
 
-    data.Chams.Adornee = char
-    data.Chams.FillColor = color
-    data.Chams.OutlineColor = Color3.new(0, 0, 0)
-    data.Chams.DepthMode = Settings.ESP_ChamsVisibleOnly and Enum.HighlightDepthMode.Occluded or
+    local depthMode = Settings.ESP_ChamsVisibleOnly and Enum.HighlightDepthMode.Occluded or
         Enum.HighlightDepthMode.AlwaysOnTop
-    data.Chams.Enabled = true
+
+    if data.LastChamsAdornee ~= char then
+        data.Chams.Adornee = char
+        data.LastChamsAdornee = char
+    end
+    if data.LastChamsColor ~= color then
+        data.Chams.FillColor = color
+        data.LastChamsColor = color
+    end
+    if data.LastChamsDepthMode ~= depthMode then
+        data.Chams.DepthMode = depthMode
+        data.LastChamsDepthMode = depthMode
+    end
+    if not data.LastChamsEnabled then
+        data.Chams.Enabled = true
+        data.LastChamsEnabled = true
+    end
 end
 
 -- [NEW] Helper to draw a line between two points
-local function DrawLine(line, p1, p2, color)
+function DrawLine(line, p1, p2, color)
     local v1, onScreen1 = Camera:WorldToViewportPoint(p1)
     local v2, onScreen2 = Camera:WorldToViewportPoint(p2)
 
@@ -9211,132 +10218,141 @@ local function DrawLine(line, p1, p2, color)
     end
 end
 
-local function UpdateSkeleton(player, storage, color)
+function UpdateSkeleton(player, storage, color)
+    if not Settings.ESP_Skeleton then
+        if (storage.ActiveSkeletonLines or 0) > 0 then
+            for i = 1, storage.ActiveSkeletonLines do
+                CheatEnv.SetDrawingVisible(storage.Skeleton[i], false)
+            end
+            storage.ActiveSkeletonLines = 0
+        end
+        return
+    end
+
     local char = ResolveCharacterModel(player)
     if not char then return end
 
-    -- Hide all lines first
-    for _, line in ipairs(storage.Skeleton) do line.Visible = false end
-
-    if not Settings.ESP_Skeleton then return end
-
-    -- R15 Logic
+    local rigType = nil
     if char:FindFirstChild("UpperTorso") then
-        local Head = char:FindFirstChild("Head")
-        local UpperTorso = char:FindFirstChild("UpperTorso")
-        local LowerTorso = char:FindFirstChild("LowerTorso")
-
-        -- Arms
-        local L_UpperArm = char:FindFirstChild("LeftUpperArm")
-        local L_LowerArm = char:FindFirstChild("LeftLowerArm")
-        local L_Hand = char:FindFirstChild("LeftHand")
-        local R_UpperArm = char:FindFirstChild("RightUpperArm")
-        local R_LowerArm = char:FindFirstChild("RightLowerArm")
-        local R_Hand = char:FindFirstChild("RightHand")
-
-        -- Legs
-        local L_UpperLeg = char:FindFirstChild("LeftUpperLeg")
-        local L_LowerLeg = char:FindFirstChild("LeftLowerLeg")
-        local L_Foot = char:FindFirstChild("LeftFoot")
-        local R_UpperLeg = char:FindFirstChild("RightUpperLeg")
-        local R_LowerLeg = char:FindFirstChild("RightLowerLeg")
-        local R_Foot = char:FindFirstChild("RightFoot")
-
-        local idx = 1
-        local function Link(p1, p2)
-            if p1 and p2 and storage.Skeleton[idx] then
-                DrawLine(storage.Skeleton[idx], p1.Position, p2.Position, color)
-                idx = idx + 1
-            end
-        end
-
-        Link(Head, UpperTorso)
-        Link(UpperTorso, LowerTorso)
-
-        Link(UpperTorso, L_UpperArm)
-        Link(L_UpperArm, L_LowerArm)
-        Link(L_LowerArm, L_Hand)
-
-        Link(UpperTorso, R_UpperArm)
-        Link(R_UpperArm, R_LowerArm)
-        Link(R_LowerArm, R_Hand)
-
-        Link(LowerTorso, L_UpperLeg)
-        Link(L_UpperLeg, L_LowerLeg)
-        Link(L_LowerLeg, L_Foot)
-
-        Link(LowerTorso, R_UpperLeg)
-        Link(R_UpperLeg, R_LowerLeg)
-        Link(R_LowerLeg, R_Foot)
-
-        -- R6 Logic
+        rigType = "R15"
     elseif char:FindFirstChild("Torso") then
-        local Head = char:FindFirstChild("Head")
-        local Torso = char:FindFirstChild("Torso")
-        local L_Arm = char:FindFirstChild("Left Arm")
-        local R_Arm = char:FindFirstChild("Right Arm")
-        local L_Leg = char:FindFirstChild("Left Leg")
-        local R_Leg = char:FindFirstChild("Right Leg")
+        rigType = "R6"
+    end
 
-        local idx = 1
-        local function Link(p1, p2)
-            if p1 and p2 and storage.Skeleton[idx] then
-                DrawLine(storage.Skeleton[idx], p1.Position, p2.Position, color)
-                idx = idx + 1
+    if not rigType then
+        if (storage.ActiveSkeletonLines or 0) > 0 then
+            for i = 1, storage.ActiveSkeletonLines do
+                CheatEnv.SetDrawingVisible(storage.Skeleton[i], false)
             end
+            storage.ActiveSkeletonLines = 0
+        end
+        return
+    end
+
+    local rigSpec = CheatEnv.SkeletonRigSpecs[rigType]
+    if storage.CachedCharacter ~= char or storage.CachedRigType ~= rigType or not storage.SkeletonPartCache then
+        local partCache = {}
+        for _, partName in ipairs(rigSpec.PartNames) do
+            partCache[partName] = char:FindFirstChild(partName)
+        end
+        storage.CachedCharacter = char
+        storage.CachedRigType = rigType
+        storage.SkeletonPartCache = partCache
+    end
+
+    local partCache = storage.SkeletonPartCache
+    local projectedPoints = {}
+
+    function ProjectPart(partName)
+        local cachedPoint = projectedPoints[partName]
+        if cachedPoint ~= nil then
+            return cachedPoint
         end
 
-        Link(Head, Torso)
-        Link(Torso, L_Arm)
-        Link(Torso, R_Arm)
-        Link(Torso, L_Leg)
-        Link(Torso, R_Leg)
+        local part = partCache[partName]
+        if not part or not part.Parent then
+            part = char:FindFirstChild(partName)
+            partCache[partName] = part
+        end
+
+        if not part then
+            projectedPoints[partName] = false
+            return false
+        end
+
+        local point, onScreen = Camera:WorldToViewportPoint(part.Position)
+        if not onScreen then
+            projectedPoints[partName] = false
+            return false
+        end
+
+        local screenPoint = Vector2.new(point.X, point.Y)
+        projectedPoints[partName] = screenPoint
+        return screenPoint
     end
+
+    local usedLines = 0
+    for _, link in ipairs(rigSpec.Links) do
+        local fromPoint = ProjectPart(link[1])
+        local toPoint = ProjectPart(link[2])
+        if fromPoint and toPoint and storage.Skeleton[usedLines + 1] then
+            usedLines = usedLines + 1
+            local line = storage.Skeleton[usedLines]
+            line.From = fromPoint
+            line.To = toPoint
+            line.Color = color
+            CheatEnv.SetDrawingVisible(line, true)
+        end
+    end
+
+    local previousActive = storage.ActiveSkeletonLines or 0
+    if previousActive > usedLines then
+        for i = usedLines + 1, previousActive do
+            CheatEnv.SetDrawingVisible(storage.Skeleton[i], false)
+        end
+    end
+    storage.ActiveSkeletonLines = usedLines
 end
 
 
 -- [REDESIGNED] Helper to draw corner box with shadow outlines
-local function DrawCornerBox(data, x, y, w, h, color)
+function DrawCornerBox(data, x, y, w, h, color)
     local cornerSize = math.min(w, h) * 0.22 -- 22% for tighter corners
     local lines = data.CornerLines
     local outlines = data.CornerOutlines
     if not lines or #lines < 8 then return end
 
-    -- Corner positions for both color and shadow lines
-    local corners = {
-        -- Top-Left
-        { Vector2.new(x, y), Vector2.new(x + cornerSize, y) },
-        { Vector2.new(x, y), Vector2.new(x, y + cornerSize) },
-        -- Top-Right
-        { Vector2.new(x + w, y), Vector2.new(x + w - cornerSize, y) },
-        { Vector2.new(x + w, y), Vector2.new(x + w, y + cornerSize) },
-        -- Bottom-Left
-        { Vector2.new(x, y + h), Vector2.new(x + cornerSize, y + h) },
-        { Vector2.new(x, y + h), Vector2.new(x, y + h - cornerSize) },
-        -- Bottom-Right
-        { Vector2.new(x + w, y + h), Vector2.new(x + w - cornerSize, y + h) },
-        { Vector2.new(x + w, y + h), Vector2.new(x + w, y + h - cornerSize) },
-    }
+    local x2, y2 = x + w, y + h
+    local xc, yc = x + cornerSize, y + cornerSize
+    local x2c, y2c = x2 - cornerSize, y2 - cornerSize
 
-    for i = 1, 8 do
-        -- Shadow outline (black, drawn first = behind)
-        if outlines and outlines[i] then
-            outlines[i].From = corners[i][1]
-            outlines[i].To = corners[i][2]
-            outlines[i].Color = Color3.new(0, 0, 0)
-            outlines[i].Visible = true
+    function ApplySegment(index, fromPoint, toPoint)
+        if outlines and outlines[index] then
+            outlines[index].From = fromPoint
+            outlines[index].To = toPoint
+            CheatEnv.SetDrawingVisible(outlines[index], true)
         end
-        -- Main color line (drawn on top)
-        lines[i].From = corners[i][1]
-        lines[i].To = corners[i][2]
-        lines[i].Color = color
-        lines[i].Visible = true
+        lines[index].From = fromPoint
+        lines[index].To = toPoint
+        lines[index].Color = color
+        CheatEnv.SetDrawingVisible(lines[index], true)
     end
+
+    ApplySegment(1, Vector2.new(x, y), Vector2.new(xc, y))
+    ApplySegment(2, Vector2.new(x, y), Vector2.new(x, yc))
+    ApplySegment(3, Vector2.new(x2, y), Vector2.new(x2c, y))
+    ApplySegment(4, Vector2.new(x2, y), Vector2.new(x2, yc))
+    ApplySegment(5, Vector2.new(x, y2), Vector2.new(xc, y2))
+    ApplySegment(6, Vector2.new(x, y2), Vector2.new(x, y2c))
+    ApplySegment(7, Vector2.new(x2, y2), Vector2.new(x2c, y2))
+    ApplySegment(8, Vector2.new(x2, y2), Vector2.new(x2, y2c))
+
+    data.CornerBoxVisible = true
 end
 
 local ESPWasEnabled = false
 
-local function UpdateESP()
+function UpdateESP()
     if not Camera then
         for _, data in pairs(ESP_Storage) do
             HideAllESP(data)
@@ -9364,6 +10380,22 @@ local function UpdateESP()
     end
     ESPWasEnabled = true
 
+    local espBox = Settings.ESP_Box
+    local espCornerBox = espBox and Settings.ESP_CornerBox
+    local espBoxFill = espBox and Settings.ESP_BoxFill
+    local espTracers = Settings.ESP_Tracers == true
+    local espHealthBar = Settings.ESP_HealthBar == true
+    local espHealthText = espHealthBar and Settings.ESP_HealthText == true
+    local espNames = Settings.ESP_Names == true
+    local espWeapon = Settings.ESP_Weapon == true
+    local espDistance = Settings.ESP_Distance == true
+    local espSkeleton = Settings.ESP_Skeleton == true
+    local espChams = Settings.ESP_Chams == true
+    local maxDistance = Settings.ESP_MaxDistance or 1000
+    local maxDistanceSq = maxDistance * maxDistance
+    local isSCPRP = game.PlaceId == 5041144419
+    local isMM2 = MM2_Data.IsMM2
+
     -- [OPTIMIZATION] Cache camera values
     local camPos = Camera.CFrame.Position
     local viewportSize = Camera.ViewportSize
@@ -9378,7 +10410,7 @@ local function UpdateESP()
             continue
         end
 
-        if game.PlaceId == 5041144419 and Settings.AdvancedTeamCheck then
+        if isSCPRP and Settings.AdvancedTeamCheck then
             if not SCPRP_AdvancedTeamCheck(plr) then
                 HideAllESP(data)
                 continue
@@ -9395,7 +10427,7 @@ local function UpdateESP()
         local mm2_Color = Settings.BoxColor
         local shouldDraw = true
 
-        if MM2_Data.IsMM2 then
+        if isMM2 then
             mm2_Role = MM2_Data.Roles[plr] or "Player"
             if mm2_Role == "Murder" then
                 shouldDraw = Settings.MM2_ESP_Murder
@@ -9417,7 +10449,7 @@ local function UpdateESP()
             end
 
             -- [NEW] SCP:RP Color Logic
-            if game.PlaceId == 5041144419 then
+            if isSCPRP then
                 mm2_Color = GetSCPRP_ESPColor(plr)
             end
         end
@@ -9434,101 +10466,107 @@ local function UpdateESP()
             local hrpPos = anchorPart.Position
 
             -- [OPTIMIZATION] Distance culling
-            local distance = (hrpPos - camPos).Magnitude
-            if distance > Settings.ESP_MaxDistance then
+            local offset = hrpPos - camPos
+            local distanceSq = offset:Dot(offset)
+            if distanceSq > maxDistanceSq then
                 HideAllESP(data)
                 continue
             end
 
             local Pos, OnScreen = Camera:WorldToViewportPoint(hrpPos)
             if OnScreen then
-                local Size = (Camera:WorldToViewportPoint(hrpPos - Vector3.new(0, 3, 0)).Y - Camera:WorldToViewportPoint(hrpPos + Vector3.new(0, 2.6, 0)).Y) /
-                    2
+                local topPoint = Camera:WorldToViewportPoint(hrpPos + Vector3.new(0, 2.6, 0))
+                local bottomPoint = Camera:WorldToViewportPoint(hrpPos - Vector3.new(0, 3, 0))
+                local Size = (bottomPoint.Y - topPoint.Y) / 2
                 local bWidth, bHeight = (Size * 1.5), (Size * 2)
                 local bPosX, bPosY = (Pos.X - bWidth / 2), (Pos.Y - bHeight / 2)
+                local distance = espDistance and math_sqrt(distanceSq) or nil
+                data.Hidden = false
 
-                UpdatePlayerChams(plr, data, mm2_Color, Settings.ESP_Chams)
+                UpdatePlayerChams(plr, data, mm2_Color, espChams)
 
                 -- ═══════════════════════════════════
                 -- BOX RENDERING (Standard or Corner)
                 -- ═══════════════════════════════════
-                if Settings.ESP_Box then
-                    if Settings.ESP_CornerBox then
+                if espBox then
+                    if espCornerBox then
                         -- Corner Box with shadow outlines
-                        data.Box.Visible = false
-                        data.BoxOutline.Visible = false
+                        CheatEnv.SetDrawingVisible(data.Box, false)
+                        CheatEnv.SetDrawingVisible(data.BoxOutline, false)
                         DrawCornerBox(data, bPosX, bPosY, bWidth, bHeight, mm2_Color)
                     else
                         -- Hide corner elements
-                        if data.CornerLines then
+                        if data.CornerLines and data.CornerBoxVisible then
                             for _, l in ipairs(data.CornerLines) do l.Visible = false end
                         end
-                        if data.CornerOutlines then
+                        if data.CornerOutlines and data.CornerBoxVisible then
                             for _, l in ipairs(data.CornerOutlines) do l.Visible = false end
                         end
+                        data.CornerBoxVisible = false
                         -- Shadow outline (1px bigger on each side)
                         data.BoxOutline.Size = Vector2.new(bWidth + 2, bHeight + 2)
                         data.BoxOutline.Position = Vector2.new(bPosX - 1, bPosY - 1)
-                        data.BoxOutline.Visible = true
+                        CheatEnv.SetDrawingVisible(data.BoxOutline, true)
 
                         -- Main crisp box
                         data.Box.Size = Vector2.new(bWidth, bHeight)
                         data.Box.Position = Vector2.new(bPosX, bPosY)
                         data.Box.Color = mm2_Color
-                        data.Box.Visible = true
+                        CheatEnv.SetDrawingVisible(data.Box, true)
                     end
                 else
-                    data.Box.Visible = false
-                    data.BoxOutline.Visible = false
-                    if data.CornerLines then
+                    CheatEnv.SetDrawingVisible(data.Box, false)
+                    CheatEnv.SetDrawingVisible(data.BoxOutline, false)
+                    if data.CornerLines and data.CornerBoxVisible then
                         for _, l in ipairs(data.CornerLines) do l.Visible = false end
                     end
-                    if data.CornerOutlines then
+                    if data.CornerOutlines and data.CornerBoxVisible then
                         for _, l in ipairs(data.CornerOutlines) do l.Visible = false end
                     end
+                    data.CornerBoxVisible = false
                 end
 
                 -- ═══════════════════════════════════
                 -- BOX FILL
                 -- ═══════════════════════════════════
-                if Settings.ESP_Box and Settings.ESP_BoxFill then
+                if espBoxFill then
                     data.BoxFill.Size = Vector2.new(bWidth - 2, bHeight - 2)
                     data.BoxFill.Position = Vector2.new(bPosX + 1, bPosY + 1)
                     data.BoxFill.Color = mm2_Color
                     data.BoxFill.Transparency = Settings.ESP_BoxFillTransparency
-                    data.BoxFill.Visible = true
+                    CheatEnv.SetDrawingVisible(data.BoxFill, true)
                 else
-                    data.BoxFill.Visible = false
+                    CheatEnv.SetDrawingVisible(data.BoxFill, false)
                 end
 
                 -- ═══════════════════════════════════
                 -- ACCENT TOP BAR (colored line above box)
                 -- ═══════════════════════════════════
-                if Settings.ESP_Box and data.TopBar then
+                if espBox and data.TopBar then
                     data.TopBar.From = Vector2.new(bPosX, bPosY - 3)
                     data.TopBar.To = Vector2.new(bPosX + bWidth, bPosY - 3)
                     data.TopBar.Color = mm2_Color
-                    data.TopBar.Visible = true
+                    CheatEnv.SetDrawingVisible(data.TopBar, true)
                 elseif data.TopBar then
-                    data.TopBar.Visible = false
+                    CheatEnv.SetDrawingVisible(data.TopBar, false)
                 end
 
                 -- ═══════════════════════════════════
                 -- TRACER (thin line from screen bottom)
                 -- ═══════════════════════════════════
-                if Settings.ESP_Tracers and data.Tracer then
+                if espTracers and data.Tracer then
                     data.Tracer.From = screenBottom
                     data.Tracer.To = Vector2.new(Pos.X, bPosY + bHeight)
                     data.Tracer.Color = mm2_Color
-                    data.Tracer.Visible = true
+                    CheatEnv.SetDrawingVisible(data.Tracer, true)
                 elseif data.Tracer then
-                    data.Tracer.Visible = false
+                    CheatEnv.SetDrawingVisible(data.Tracer, false)
                 end
 
                 -- ═══════════════════════════════════
                 -- HEALTH BAR (slim left bar with gradient)
                 -- ═══════════════════════════════════
-                if Settings.ESP_HealthBar and humanoid then
+                if espHealthBar and humanoid then
                     local hp = humanoid.Health
                     local maxHp = humanoid.MaxHealth
                     if maxHp <= 0 then maxHp = 100 end
@@ -9544,45 +10582,45 @@ local function UpdateESP()
                     data.HealthBarOutline.Size = Vector2.new(barWidth + 2, bHeight + 2)
                     data.HealthBarOutline.Position = Vector2.new(barX - 1, bPosY - 1)
                     data.HealthBarOutline.Color = Color3.fromRGB(10, 10, 10)
-                    data.HealthBarOutline.Visible = true
+                    CheatEnv.SetDrawingVisible(data.HealthBarOutline, true)
 
                     -- Inner bar (fills bottom → up)
                     local fillHeight = math.max(bHeight * hpPercent, 1)
                     data.HealthBar.Size = Vector2.new(barWidth, fillHeight)
                     data.HealthBar.Position = Vector2.new(barX, bPosY + (bHeight - fillHeight))
                     data.HealthBar.Color = hpColor
-                    data.HealthBar.Visible = true
+                    CheatEnv.SetDrawingVisible(data.HealthBar, true)
 
                     -- Health text (above health bar)
-                    if Settings.ESP_HealthText then
+                    if espHealthText then
                         local hpNum = math.floor(hp)
-                        data.HealthText.Text = tostring(hpNum)
+                        CheatEnv.SetDrawingText(data.HealthText, tostring(hpNum))
                         data.HealthText.Position = Vector2.new(barX + (barWidth / 2), bPosY - 12)
                         data.HealthText.Color = hpColor
-                        data.HealthText.Visible = true
+                        CheatEnv.SetDrawingVisible(data.HealthText, true)
                     else
-                        data.HealthText.Visible = false
+                        CheatEnv.SetDrawingVisible(data.HealthText, false)
                     end
                 else
-                    data.HealthBarOutline.Visible = false
-                    data.HealthBar.Visible = false
-                    data.HealthText.Visible = false
+                    CheatEnv.SetDrawingVisible(data.HealthBarOutline, false)
+                    CheatEnv.SetDrawingVisible(data.HealthBar, false)
+                    CheatEnv.SetDrawingVisible(data.HealthText, false)
                 end
 
                 -- ═══════════════════════════════════
                 -- NAME TAG (above box / above topbar)
                 -- ═══════════════════════════════════
-                if Settings.ESP_Names then
+                if espNames then
                     data.Tag.Position = Vector2.new(Pos.X, bPosY - 18)
                     data.Tag.Color = mm2_Color
-                    if MM2_Data.IsMM2 and mm2_Role ~= "Player" then
-                        data.Tag.Text = "[" .. mm2_Role:upper() .. "] " .. plr.DisplayName
+                    if isMM2 and mm2_Role ~= "Player" then
+                        CheatEnv.SetDrawingText(data.Tag, "[" .. mm2_Role:upper() .. "] " .. plr.DisplayName)
                     else
-                        data.Tag.Text = plr.DisplayName
+                        CheatEnv.SetDrawingText(data.Tag, plr.DisplayName)
                     end
-                    data.Tag.Visible = true
+                    CheatEnv.SetDrawingVisible(data.Tag, true)
                 else
-                    data.Tag.Visible = false
+                    CheatEnv.SetDrawingVisible(data.Tag, false)
                 end
 
                 -- ═══════════════════════════════════
@@ -9591,34 +10629,38 @@ local function UpdateESP()
                 local bottomOffset = bPosY + bHeight + 2
 
                 -- Weapon
-                if Settings.ESP_Weapon then
+                if espWeapon then
                     local tool = char:FindFirstChildOfClass("Tool")
-                    data.WeaponTag.Text = tool and tool.Name or "-"
+                    local toolName = tool and tool.Name or "-"
+                    CheatEnv.SetDrawingText(data.WeaponTag, toolName)
                     data.WeaponTag.Position = Vector2.new(Pos.X, bottomOffset)
                     data.WeaponTag.Color = Settings.WeaponColor
-                    data.WeaponTag.Visible = true
+                    CheatEnv.SetDrawingVisible(data.WeaponTag, true)
                     bottomOffset = bottomOffset + 11
                 else
-                    data.WeaponTag.Visible = false
+                    CheatEnv.SetDrawingVisible(data.WeaponTag, false)
                 end
 
                 -- Distance (clean format)
-                if Settings.ESP_Distance then
-                    data.DistanceTag.Text = math.floor(distance) .. "m"
+                if espDistance and distance then
+                    CheatEnv.SetDrawingText(data.DistanceTag, math.floor(distance) .. "m")
                     data.DistanceTag.Position = Vector2.new(Pos.X, bottomOffset)
                     data.DistanceTag.Color = Settings.DistanceColor
-                    data.DistanceTag.Visible = true
+                    CheatEnv.SetDrawingVisible(data.DistanceTag, true)
                 else
-                    data.DistanceTag.Visible = false
+                    CheatEnv.SetDrawingVisible(data.DistanceTag, false)
                 end
 
                 -- ═══════════════════════════════════
                 -- SKELETON
                 -- ═══════════════════════════════════
-                if Settings.ESP_Skeleton then
+                if espSkeleton then
                     UpdateSkeleton(plr, data, mm2_Color)
-                elseif data.Skeleton then
-                    for _, l in ipairs(data.Skeleton) do l.Visible = false end
+                elseif data.Skeleton and (data.ActiveSkeletonLines or 0) > 0 then
+                    for i = 1, data.ActiveSkeletonLines do
+                        CheatEnv.SetDrawingVisible(data.Skeleton[i], false)
+                    end
+                    data.ActiveSkeletonLines = 0
                 end
             else
                 HideAllESP(data)
@@ -9640,11 +10682,12 @@ table.insert(CheatEnv.Connections, Players.PlayerRemoving:Connect(function(playe
     VelocityBuffers[player] = nil
     PredictionStates[player] = nil
     PredictionFrameCache[player] = nil
+    PredictionMetaCache[player] = nil
     RebuildTargetScanPlayers()
 end))
 
 -- Counter Blox No Spread Logic
-local function ApplyNoSpread()
+function ApplyNoSpread()
     if game.PlaceId ~= 301549746 then return end
 
     local originals = CheatEnv.NoSpreadOriginals
@@ -9690,7 +10733,7 @@ end
 
 -- Запуск No Spread при включении
 -- Helper function to check if any weapon mods are active
-local function IsAnyModActive()
+function IsAnyModActive()
     return Settings.RapidFire or Settings.InstantReload or Settings.InfiniteAmmo or
         Settings.MaxPenetration or Settings.ArmorPierce or Settings.NoFalloff or Settings.MaxRange or Settings.NoSpread or
         Settings.DamageMult > 1 or Settings.FreezeSpray or Settings.ForceFullAuto or
@@ -9745,7 +10788,7 @@ ApplyWeaponMods = function()
     local WeaponsFolder = game:GetService("ReplicatedStorage"):FindFirstChild("Weapons")
     if not WeaponsFolder then return end
 
-    local function CacheOriginal(container, valueObj, originalName)
+    function CacheOriginal(container, valueObj, originalName)
         if not valueObj then return nil end
 
         local existing = container:FindFirstChild(originalName)
@@ -9769,7 +10812,7 @@ ApplyWeaponMods = function()
     end
 
     -- Recursive function to process any container
-    local function ProcessContainer(container)
+    function ProcessContainer(container)
         -- Fire Rate (with slider support)
         local fireRate = container:FindFirstChild("FireRate")
         if fireRate and fireRate:IsA("NumberValue") then
@@ -10398,34 +11441,39 @@ end
 
 -- CB Features Heartbeat Loop
 table.insert(CheatEnv.Connections, RunService.Heartbeat:Connect(function()
+    local now = tick()
+
     -- Misc global fullbright
     if Settings.Misc_Fullbright then
-        local backup = CheatEnv.MiscLightingBackup
-        if not backup then
-            backup = {
-                Brightness = Lighting.Brightness,
-                Ambient = Lighting.Ambient,
-                OutdoorAmbient = Lighting.OutdoorAmbient,
-                GlobalShadows = Lighting.GlobalShadows
-            }
-            pcall(function()
-                backup.ExposureCompensation = Lighting.ExposureCompensation
-            end)
-            CheatEnv.MiscLightingBackup = backup
-        end
+        if ShouldRunCadence("MiscFullbright", now, 0.1) then
+            local backup = CheatEnv.MiscLightingBackup
+            if not backup then
+                backup = {
+                    Brightness = Lighting.Brightness,
+                    Ambient = Lighting.Ambient,
+                    OutdoorAmbient = Lighting.OutdoorAmbient,
+                    GlobalShadows = Lighting.GlobalShadows
+                }
+                pcall(function()
+                    backup.ExposureCompensation = Lighting.ExposureCompensation
+                end)
+                CheatEnv.MiscLightingBackup = backup
+            end
 
-        Lighting.Brightness = Settings.Misc_FB_Brightness or 3
-        Lighting.Ambient = Color3.fromRGB(255, 255, 255)
-        Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
-        if Settings.Misc_FB_DisableShadows then
-            Lighting.GlobalShadows = false
-        else
-            Lighting.GlobalShadows = backup.GlobalShadows
+            Lighting.Brightness = Settings.Misc_FB_Brightness or 3
+            Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+            Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+            if Settings.Misc_FB_DisableShadows then
+                Lighting.GlobalShadows = false
+            else
+                Lighting.GlobalShadows = backup.GlobalShadows
+            end
+            pcall(function()
+                Lighting.ExposureCompensation = Settings.Misc_FB_Exposure or 0.35
+            end)
         end
-        pcall(function()
-            Lighting.ExposureCompensation = Settings.Misc_FB_Exposure or 0.35
-        end)
     else
+        ResetCadence("MiscFullbright")
         local backup = CheatEnv.MiscLightingBackup
         if backup then
             Lighting.Brightness = backup.Brightness or Lighting.Brightness
@@ -10451,13 +11499,23 @@ table.insert(CheatEnv.Connections, RunService.Heartbeat:Connect(function()
 
     -- Viewmodel offset (only when values change significantly)
     if game.PlaceId == 301549746 then
-        ApplyViewmodelOffset()
+        if ShouldRunCadence("Viewmodel", now, 1 / 20) then
+            ApplyViewmodelOffset()
+        end
 
         -- CB Visuals (apply every frame for toggles)
-        ApplyCBVisuals()
+        if ShouldRunCadence("CBVisuals", now, 1 / 15) then
+            ApplyCBVisuals()
+        end
 
         -- Bomb Timer ESP
-        UpdateBombTimerESP()
+        if ShouldRunCadence("BombTimer", now, 0.1) then
+            UpdateBombTimerESP()
+        end
+    else
+        ResetCadence("Viewmodel")
+        ResetCadence("CBVisuals")
+        ResetCadence("BombTimer")
     end
 end))
 
@@ -10473,6 +11531,7 @@ function SetupRaycastHook()
     if type(SharedHookState) == "table" and SharedHookState.raycastHookEnabled then return end
     if type(SharedHookState) == "table" and SharedHookState.raycastInstalled then
         SharedHookState.raycastHookEnabled = true
+        RefreshSharedWallCache(true)
         return
     end
     if not hookmetamethod then
@@ -10496,7 +11555,16 @@ function SetupRaycastHook()
                     local direction = args[2]
                     local rayParams = args[3]
 
-                    if rayParams then
+                    if rayParams and rayParams.FilterType == Enum.RaycastFilterType.Exclude then
+                        RefreshSharedWallCache(false)
+                        local wallFilterCache = hookState and hookState.wallFilterCache
+                        local wallCacheSize = hookState and hookState.wallCacheSize or 0
+                        if wallCacheSize <= 0 then
+                            if SharedHookState and SharedHookState.originalNamecall then
+                                return SharedHookState.originalNamecall(self, ...)
+                            end
+                        end
+
                         -- Clone the params to avoid modifying original
                         local newParams = RaycastParams.new()
                         newParams.FilterType = rayParams.FilterType
@@ -10514,22 +11582,18 @@ function SetupRaycastHook()
 
                         -- Add all walls from current runtime storage to filter
                         local newFilter = {}
+                        local newFilterCount = 0
                         for _, v in ipairs(filterList) do
-                            table.insert(newFilter, v)
+                            newFilterCount = newFilterCount + 1
+                            newFilter[newFilterCount] = v
                         end
 
-                        local wallStorageRef = nil
-                        if hookState and hookState.getWallStorage then
-                            local ok, result = pcall(hookState.getWallStorage)
-                            if ok and type(result) == "table" then
-                                wallStorageRef = result
-                            end
-                        end
-
-                        if wallStorageRef then
-                            for wall, _ in pairs(wallStorageRef) do
-                                if wall and wall.Parent then
-                                    table.insert(newFilter, wall)
+                        if wallFilterCache then
+                            for i = 1, wallCacheSize do
+                                local wall = wallFilterCache[i]
+                                if wall then
+                                    newFilterCount = newFilterCount + 1
+                                    newFilter[newFilterCount] = wall
                                 end
                             end
                         end
@@ -10669,7 +11733,7 @@ CheatEnv.SetMenuVisibleAnimated = function(show)
     local activeTweens = {}
     menuAnimState.tweens = activeTweens
 
-    local function PlayTween(instance, info, goal)
+    function PlayTween(instance, info, goal)
         if not instance then return nil end
         local tween = TweenService:Create(instance, info, goal)
         activeTweens[#activeTweens + 1] = tween
@@ -10857,11 +11921,11 @@ table.insert(CheatEnv.Connections, UserInputService.InputBegan:Connect(function(
                 Settings.Aimlock = true
                 SyncButton("Aimlock")
             end
-            AimlockEngagedFromGUI = false
+            SetAimlockEngaged(AimlockState.Engaged, false)
             if aimlockTrigger == "RMB Hold" then
                 AimlockState.RMBHeld = true
             else
-                AimlockState.Engaged = not AimlockState.Engaged
+                SetAimlockEngaged(not AimlockState.Engaged, false)
             end
             handled = true
         end
@@ -10924,6 +11988,7 @@ table.insert(CheatEnv.Connections, UserInputService.InputBegan:Connect(function(
 
                     WallStorage[part] = nil
                     OriginalWallProperties[part] = nil
+                    RefreshSharedWallCache(true)
                 end
             end
         end
@@ -10939,11 +12004,10 @@ table.insert(CheatEnv.Connections, UserInputService.InputBegan:Connect(function(
         end
 
         if Settings.AimlockMode == "N Toggle" then
-            AimlockEngaged = not AimlockEngaged
+            SetAimlockEngaged(not AimlockState.Engaged, false)
         elseif Settings.AimlockMode == "N Hold" then
-            AimlockEngaged = true
+            SetAimlockEngaged(true, false)
         end
-        AimlockEngagedFromGUI = false
 
         UpdateKeybindList()
         return
@@ -10959,8 +12023,7 @@ table.insert(CheatEnv.Connections, UserInputService.InputBegan:Connect(function(
                 Settings[bind.Setting] = not Settings[bind.Setting]
                 SyncButton(bind.Setting)
                 if bind.Setting == "Aimbot" and not Settings.Aimbot then
-                    AimbotState.Engaged = false
-                    AimbotState.RMBHeld = false
+                    ResetAimbotRuntimeState()
                 end
                 UpdateKeybindList()
                 return
@@ -10973,7 +12036,7 @@ table.insert(CheatEnv.Connections, UserInputService.InputEnded:Connect(function(
     local aimlockBind = CheatEnv.FindKeybindBySetting("Aimlock")
     local aimlockKey = aimlockBind and aimlockBind.Key or Enum.KeyCode.N
     if aimlockKey and input.KeyCode == aimlockKey and Settings.AimlockMode == "N Hold" and (Settings.AimlockTrigger or "N Key") == "N Key" then
-        AimlockEngaged = false
+        SetAimlockEngaged(false, false)
         UpdateKeybindList()
     end
 
@@ -11009,11 +12072,15 @@ table.insert(CheatEnv.Connections, UserInputService.WindowFocusReleased:Connect(
 end))
 
 table.insert(CheatEnv.Connections, RunService.RenderStepped:Connect(function(dt)
+    local now = tick()
+
     if CheatEnv.UpdateBlurParticles then
         CheatEnv.UpdateBlurParticles(dt)
     end
 
-    UpdateESP()
+    if ShouldRunCadence("ESP", now, 1 / 30) then
+        UpdateESP()
+    end
 
     if Settings.Aimlock or AimlockRing.Visible or AimlockState.RMBHeld or AimlockState.Engaged then
         UpdateAimlock()
@@ -11030,6 +12097,8 @@ table.insert(CheatEnv.Connections, RunService.RenderStepped:Connect(function(dt)
     if Settings.NoRecoil then
         ApplyNoRecoil(dt)
     end
+
+    UpdateAimDebugOverlay()
 end))
 
 UpdateKeybindList()
@@ -11055,3 +12124,5 @@ end
 
 print("✓ VAYS v6.8 (CB MASTER UPDATE) Loaded successfully.")
  
+
+
